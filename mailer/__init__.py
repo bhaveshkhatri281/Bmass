@@ -1,0 +1,2 @@
+"""Mobisa Mailer core package."""
+

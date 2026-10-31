@@ -1,0 +1,24 @@
+# Virtual environment
+.venv/
+__pycache__/
+*.pyc
+
+# Secrets & credentials (NEVER commit or share)
+secrets/
+
+# Runtime data & logs
+data/
+logs/
+exports/
+
+# Lead data must never be committed, wherever it lands
+*.xlsx
+*.xls
+*.csv
+
+# Test cache
+.pytest_cache/
+
+# Streamlit config
+.streamlit/
+
