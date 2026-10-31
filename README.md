@@ -78,6 +78,11 @@ To enable Gmail sending and reply detection, set up Google Cloud OAuth:
 - **Tokens**: Per-inbox OAuth tokens are securely kept in `secrets\tokens\<email>.json`.
 - **Logs**: Daily rotating logs are placed in `logs\mailer_YYYY-MM-DD.log`.
 - **Configuration**: Settings are stored in `settings.yaml` and can be edited in the dashboard.
+- **Import**: The Good and Weak sheets are read as that quality when the file has no Status column. Empty or non-numeric priority becomes 5. The Import page preselects the Good sheet.
+- **Name cleanup**: Double quotes are removed anywhere in a business name, not only around it. Single quotes are removed only at the ends. Legal suffixes at the end of a name are removed before merging: SAS, SASU, SARL, EURL, SA, SCI, SNC, Ltd, Limited, LLC, Inc, GmbH, BV, AB, Srl, SL, with or without dots or brackets. A legal form at the start of a name stays, because `AB` and `SA` are also ordinary brand words there.
+- **Footer**: `{{us_address}}` prints `, Mobisa · <business_address>` for United States leads and nothing for anyone else. Other countries see only `{{sender_name}}` and the opt-out line.
+- **Category phrases**: The seed covers every raw category in the merged lead file. A lead without a matching phrase uses its raw category text, and the preview shows a warning. Other languages use `phrase_en`.
+- **New steps**: A new step starts inactive and cannot be activated until its `en` template exists.
 - **Lead files**: Keep them in `data\`. `*.xlsx`, `*.xls`, `*.csv` and `exports\` are gitignored and must never be committed.
 
 ---

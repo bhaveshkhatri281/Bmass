@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from mailer.db import get_app_state, get_conn, open_conn, set_app_state
-from mailer.seed import DEFAULT_STEPS
+from mailer.seed import CATEGORY_PHRASE_GROUPS, DEFAULT_STEPS
 
 
 def test_dashboard_connection_works_across_threads():
@@ -31,6 +31,16 @@ def test_app_state_upsert():
     set_app_state("paused_all", "1")
     set_app_state("paused_all", "0")
     assert get_app_state("paused_all") == "0"
+
+
+def test_category_phrases_are_seeded_lowercase_without_duplicates():
+    keys = [key for group_keys, _, _ in CATEGORY_PHRASE_GROUPS for key in group_keys]
+    assert len(keys) == len(set(keys))
+    assert all(key == key.lower().strip() for key in keys)
+    assert all(en == en.lower() and fr == fr.lower() for _, en, fr in CATEGORY_PHRASE_GROUPS)
+
+    with open_conn() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM category_phrases").fetchone()[0] == len(keys)
 
 
 def test_default_steps_are_day_0_3_7():

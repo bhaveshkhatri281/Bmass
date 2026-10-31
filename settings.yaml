@@ -3,8 +3,8 @@ sender:
   sender_title: ""          # filled later
   website: ""               # filled later
   booking_link: ""          # filled later
-  portfolio_link: ""        # filled later
-  business_address: ""      # required before dry_run can be turned off
+  portfolio_link: "https://mobisa.in"
+  business_address: "Jaipur, Rajasthan, India"  # required before dry_run can be turned off
   list_unsubscribe_address: "unsubscribe@mobisa.in"
   unsubscribe_inbox: "sales@mobisa.in"  # the connected inbox that receives the alias above
 

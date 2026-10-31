@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 from mailer.config import Settings, load_settings
 from mailer.db import open_conn, utc_now_iso
 
+US_COUNTRY_NAMES = ("united states", "usa", "us")
+
 # US State mapping as per Section 7
 US_STATE_TIMEZONES = {
     # Pacific (America/Los_Angeles)
@@ -75,7 +77,7 @@ def recipient_tz(lead: Dict[str, Any] | sqlite3.Row, conn: Optional[sqlite3.Conn
     country = str(lead["country"] or "").strip()
     location = str(lead["location"] or "").strip()
 
-    if country.lower() in ("united states", "usa", "us"):
+    if country.lower() in US_COUNTRY_NAMES:
         tz_name = parse_us_state_tz(location)
         try:
             return ZoneInfo(tz_name)
