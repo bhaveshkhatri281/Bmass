@@ -6,7 +6,7 @@ sender:
   portfolio_link: ""        # filled later
   business_address: ""      # required before dry_run can be turned off
   list_unsubscribe_address: "unsubscribe@mobisa.in"
-  unsubscribe_inbox: ""     # the connected inbox that receives the alias above
+  unsubscribe_inbox: "sales@mobisa.in"  # the connected inbox that receives the alias above
 
 mode:
   dry_run: true             # default ON. Sends nothing, only logs.
