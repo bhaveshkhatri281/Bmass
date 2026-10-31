@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import email.header
 import email.utils
 import http.client
 import json
@@ -47,6 +48,11 @@ OAUTH_TIMEOUT_SECONDS = 300
 RECIPIENT_ERROR_HINTS = ("invalid to header", "invalid recipient")
 
 NETWORK_ERRORS = (OSError, http.client.HTTPException, httplib2.HttpLib2Error, TransportError)
+
+MAX_RETRIES = 3
+
+# Tolerance for the PC clock and Gmail's clock disagreeing when matching a sent copy.
+SENT_LOOKUP_SKEW_SECONDS = 60
 
 
 # ==============================================================================
@@ -148,7 +154,7 @@ def _map_http_error(err: HttpError) -> GmailClientError:
     return GmailClientError(f"Gmail API error ({status}): {msg}")
 
 
-def execute_with_retry(callable_func: Any, max_retries: int = 3) -> Any:
+def execute_with_retry(callable_func: Any, max_retries: int = MAX_RETRIES) -> Any:
     """Execute a callable, retrying TransientError up to max_retries times with exponential backoff."""
     backoff = 1.0
     attempt = 0
@@ -283,6 +289,58 @@ def build_message(
     return msg
 
 
+def _normalize_header(value: str) -> str:
+    """Decode an RFC 2047 header value and collapse its whitespace."""
+    return " ".join(str(email.header.make_header(email.header.decode_header(value))).split())
+
+
+def _find_sent_copy(service: Resource, msg: EmailMessage, thread_id: Optional[str], not_before_ms: int) -> Optional[SentResult]:
+    """Return the Sent copy of msg if an interrupted send reached Gmail, else None.
+
+    Gmail search is loose, so each hit is checked against the message headers. Without
+    that, step 3 would match step 2: same recipient, same "Re:" subject, same hour.
+    """
+    to = msg["To"]
+    subject = msg["Subject"]
+    in_reply_to = msg.get("In-Reply-To", "")
+    query = f'in:sent to:{to} subject:"{subject.replace(chr(34), " ")}" newer_than:1h'
+
+    def _call_list() -> Dict[str, Any]:
+        return service.users().messages().list(userId="me", q=query, maxResults=10).execute()
+
+    for item in execute_with_retry(_call_list).get("messages", []):
+        def _call_get() -> Dict[str, Any]:
+            return (
+                service.users()
+                .messages()
+                .get(userId="me", id=item["id"], format="metadata",
+                     metadataHeaders=["To", "Subject", "In-Reply-To", "Message-ID"])
+                .execute()
+            )
+
+        data = execute_with_retry(_call_get)
+        headers = {h.get("name", "").lower(): h.get("value", "") for h in data.get("payload", {}).get("headers", [])}
+
+        if int(data.get("internalDate", 0)) < not_before_ms:
+            continue
+        if thread_id and data.get("threadId") != thread_id:
+            continue
+        if _normalize_header(headers.get("subject", "")) != _normalize_header(subject):
+            continue
+        if to.lower() not in headers.get("to", "").lower():
+            continue
+        if headers.get("in-reply-to", "").strip() != in_reply_to:
+            continue
+
+        return SentResult(
+            gmail_message_id=data["id"],
+            thread_id=data.get("threadId", thread_id or ""),
+            rfc_message_id=headers.get("message-id", "").strip(),
+        )
+
+    return None
+
+
 def send_message(
     email_addr: str,
     to: str,
@@ -293,7 +351,11 @@ def send_message(
     in_reply_to: Optional[str] = None,
     list_unsubscribe: Optional[str] = None,
 ) -> SentResult:
-    """Build RFC 5322 plain text email and send via Gmail API."""
+    """Build RFC 5322 plain text email and send via Gmail API.
+
+    A timeout can hide a send that worked, so before each retry the Sent folder is
+    searched. If that search fails too, the error is raised and nothing is resent.
+    """
     service = get_service(email_addr)
 
     msg = build_message(email_addr, to, subject, body, display_name, in_reply_to, list_unsubscribe)
@@ -307,7 +369,27 @@ def send_message(
     def _call_send() -> Dict[str, Any]:
         return service.users().messages().send(userId="me", body=send_payload).execute()
 
-    sent_data = execute_with_retry(_call_send)
+    not_before_ms = int((time.time() - SENT_LOOKUP_SKEW_SECONDS) * 1000)
+    backoff = 1.0
+    attempt = 0
+    while True:
+        try:
+            sent_data = execute_with_retry(_call_send, max_retries=0)
+            break
+        except TransientError as e:
+            logger.warning("Send from %s to %s interrupted: %s. Checking Sent before retrying.", email_addr, to, e)
+            # Waiting first gives Gmail time to index a send that did go through.
+            time.sleep(backoff)
+            backoff *= 2
+            existing = _find_sent_copy(service, msg, thread_id, not_before_ms)
+            if existing:
+                logger.info("Interrupted send from %s to %s had reached Gmail (Gmail ID: %s). Not resending.",
+                            email_addr, to, existing.gmail_message_id)
+                return existing
+            if attempt >= MAX_RETRIES:
+                raise
+            attempt += 1
+
     gmail_msg_id = sent_data["id"]
     res_thread_id = sent_data.get("threadId", thread_id or "")
 

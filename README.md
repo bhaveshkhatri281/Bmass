@@ -90,5 +90,5 @@ To enable Gmail sending and reply detection, set up Google Cloud OAuth:
 - **Send windows**: the rules stay as specified, so Australia never overlaps the app window and Hawaii barely does. The Overview page warns about this.
 - **Dry-run safety**: only an explicit `dry_run: false` goes live. A blank or unreadable value stays in dry run.
 - **Permanent send errors**: only a rejected recipient address suppresses a lead. Other 400/404 errors are logged and the lead stays as it is.
-- **Retries**: a transient error is retried 3 times after the first attempt, as the spec says. If Gmail accepted a send but the response was lost, that retry can duplicate the email.
+- **Retries**: a transient error is retried 3 times after the first attempt, as the spec says. Before each resend, `send_message` searches `in:sent to:<recipient> subject:"<subject>" newer_than:1h`. A hit that also matches the exact subject, recipient, `In-Reply-To`, thread and send time counts as sent, and its ids are returned. If that search fails too, the error is raised and nothing is resent.
 
