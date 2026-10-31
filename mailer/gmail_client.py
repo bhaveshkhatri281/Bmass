@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import email.utils
+import http.client
 import json
 import logging
 import time
@@ -12,6 +13,8 @@ from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import httplib2
+from google.auth.exceptions import RefreshError, TransportError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -36,6 +39,14 @@ LABELS = {
     "unsubscribed": "Mobisa/Unsubscribed",
     "bounced": "Mobisa/Bounced",
 }
+
+OAUTH_TIMEOUT_SECONDS = 300
+
+# A 400 only counts as permanent when the address itself is at fault. Anything
+# else (bad thread id, account problem) must not suppress a healthy lead.
+RECIPIENT_ERROR_HINTS = ("invalid to header", "invalid recipient")
+
+NETWORK_ERRORS = (OSError, http.client.HTTPException, httplib2.HttpLib2Error, TransportError)
 
 
 # ==============================================================================
@@ -116,49 +127,46 @@ def _map_http_error(err: HttpError) -> GmailClientError:
         reasons = []
         msg = error_msg
 
+    msg_lower = msg.lower()
+
+    # Quota comes first: Gmail can report the daily limit with a 429 or a rate-limit reason.
+    if "dailyLimitExceeded" in reasons or "sending limit exceeded" in msg_lower:
+        return QuotaExceeded(f"Gmail sending quota exceeded: {msg}")
+
     if status == 429 or "rateLimitExceeded" in reasons or "userRateLimitExceeded" in reasons:
         return RateLimited(f"Gmail rate limit hit: {msg}")
 
-    if "dailyLimitExceeded" in reasons or "Daily user sending limit exceeded" in msg:
-        return QuotaExceeded(f"Gmail sending quota exceeded: {msg}")
-
-    if status == 401 or "invalid_grant" in msg.lower():
+    if status == 401 or "invalid_grant" in msg_lower:
         return AuthExpired(f"Gmail authentication expired: {msg}")
 
-    if status in (400, 404):
+    if status == 400 and any(hint in msg_lower for hint in RECIPIENT_ERROR_HINTS):
         return PermanentSendError(f"Permanent Gmail API error ({status}): {msg}")
 
-    if status in (500, 502, 503, 504):
+    if 500 <= status <= 599:
         return TransientError(f"Transient Gmail server error ({status}): {msg}")
 
     return GmailClientError(f"Gmail API error ({status}): {msg}")
 
 
 def execute_with_retry(callable_func: Any, max_retries: int = 3) -> Any:
-    """Execute a callable, retrying on TransientError with exponential backoff."""
+    """Execute a callable, retrying TransientError up to max_retries times with exponential backoff."""
     backoff = 1.0
-    for attempt in range(1, max_retries + 1):
+    attempt = 0
+    while True:
         try:
             return callable_func()
         except HttpError as e:
-            mapped = _map_http_error(e)
-            if isinstance(mapped, TransientError) and attempt < max_retries:
-                logger.warning("Transient Gmail error on attempt %d/%d: %s. Retrying in %.1fs...",
-                               attempt, max_retries, mapped, backoff)
-                time.sleep(backoff)
-                backoff *= 2
-                continue
-            raise mapped
-        except Exception as e:
-            # Check for network / socket transient failures
-            err_str = str(e).lower()
-            if any(term in err_str for term in ["timed out", "connection reset", "connection aborted"]) and attempt < max_retries:
-                logger.warning("Network issue on attempt %d/%d: %s. Retrying in %.1fs...",
-                               attempt, max_retries, e, backoff)
-                time.sleep(backoff)
-                backoff *= 2
-                continue
-            raise
+            error = _map_http_error(e)
+        except NETWORK_ERRORS as e:
+            error = TransientError(f"Network error reaching Gmail: {e}")
+
+        if not isinstance(error, TransientError) or attempt >= max_retries:
+            raise error
+
+        attempt += 1
+        logger.warning("Transient Gmail error, retry %d/%d in %.1fs: %s", attempt, max_retries, backoff, error)
+        time.sleep(backoff)
+        backoff *= 2
 
 
 # ==============================================================================
@@ -175,10 +183,15 @@ def connect_inbox(email_addr: str) -> str:
 
     flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_PATH), SCOPES)
     # Run local server flow with prompt='consent'
-    creds = flow.run_local_server(port=0, login_hint=email_addr, prompt="consent")
+    creds = flow.run_local_server(
+        port=0,
+        login_hint=email_addr,
+        prompt="consent",
+        timeout_seconds=OAUTH_TIMEOUT_SECONDS,
+    )
 
     service = build("gmail", "v1", credentials=creds, cache_discovery=False)
-    profile = service.users().getProfile(userId="me").execute()
+    profile = execute_with_retry(lambda: service.users().getProfile(userId="me").execute())
     verified_email = (profile.get("emailAddress") or "").strip().lower()
     expected_email = email_addr.strip().lower()
 
@@ -219,7 +232,10 @@ def get_service(email_addr: str) -> Resource:
                 creds.refresh(Request())
                 with open(token_file, "w", encoding="utf-8") as f:
                     f.write(creds.to_json())
-            except Exception as e:
+            except TransportError as e:
+                # A network blip must not look like a revoked token.
+                raise TransientError(f"Network error refreshing token for {email_addr}: {e}")
+            except RefreshError as e:
                 logger.error("Failed to refresh token for %s: %s", email_addr, e)
                 raise AuthExpired(f"OAuth refresh failed for {email_addr}. Please reconnect inbox: {e}")
         else:
@@ -232,19 +248,16 @@ def get_service(email_addr: str) -> Resource:
 # Sending Messages
 # ==============================================================================
 
-def send_message(
+def build_message(
     email_addr: str,
     to: str,
     subject: str,
     body: str,
     display_name: str,
-    thread_id: Optional[str] = None,
     in_reply_to: Optional[str] = None,
     list_unsubscribe: Optional[str] = None,
-) -> SentResult:
-    """Build RFC 5322 plain text email and send via Gmail API."""
-    service = get_service(email_addr)
-
+) -> EmailMessage:
+    """Build the RFC 5322 plain text message for one send."""
     msg = EmailMessage()
     msg.set_content(body)
 
@@ -267,6 +280,23 @@ def send_message(
     if list_unsubscribe:
         msg["List-Unsubscribe"] = f"<mailto:{list_unsubscribe}?subject=unsubscribe>"
 
+    return msg
+
+
+def send_message(
+    email_addr: str,
+    to: str,
+    subject: str,
+    body: str,
+    display_name: str,
+    thread_id: Optional[str] = None,
+    in_reply_to: Optional[str] = None,
+    list_unsubscribe: Optional[str] = None,
+) -> SentResult:
+    """Build RFC 5322 plain text email and send via Gmail API."""
+    service = get_service(email_addr)
+
+    msg = build_message(email_addr, to, subject, body, display_name, in_reply_to, list_unsubscribe)
     raw_bytes = msg.as_bytes()
     raw_b64 = base64.urlsafe_b64encode(raw_bytes).decode("utf-8")
 
@@ -316,20 +346,22 @@ def send_message(
 # ==============================================================================
 
 def list_recent_messages(email_addr: str, query: str) -> List[MessageMeta]:
-    """List recent messages matching query with metadata headers."""
+    """List recent messages matching query with metadata headers, following every result page."""
     service = get_service(email_addr)
     results: List[MessageMeta] = []
+    msg_summaries: List[Dict[str, Any]] = []
+    page_token: Optional[str] = None
 
     def _call_list() -> Dict[str, Any]:
-        return service.users().messages().list(userId="me", q=query, maxResults=100).execute()
+        return service.users().messages().list(userId="me", q=query, maxResults=100, pageToken=page_token).execute()
 
-    try:
+    while True:
         list_resp = execute_with_retry(_call_list)
-    except Exception as e:
-        logger.error("Failed to list messages for %s with query '%s': %s", email_addr, query, e)
-        return []
+        msg_summaries.extend(list_resp.get("messages", []))
+        page_token = list_resp.get("nextPageToken")
+        if not page_token:
+            break
 
-    msg_summaries = list_resp.get("messages", [])
     headers_to_fetch = [
         "From",
         "To",
@@ -372,7 +404,9 @@ def list_recent_messages(email_addr: str, query: str) -> List[MessageMeta]:
                 headers=hdrs,
             )
             results.append(meta)
-        except Exception as e:
+        except (AuthExpired, QuotaExceeded, RateLimited):
+            raise
+        except GmailClientError as e:
             logger.warning("Could not fetch metadata for message %s: %s", msg_id, e)
 
     return results
@@ -385,11 +419,7 @@ def get_message_text(email_addr: str, msg_id: str) -> str:
     def _call_get_full() -> Dict[str, Any]:
         return service.users().messages().get(userId="me", id=msg_id, format="full").execute()
 
-    try:
-        data = execute_with_retry(_call_get_full)
-    except Exception as e:
-        logger.error("Failed to retrieve full message %s: %s", msg_id, e)
-        return ""
+    data = execute_with_retry(_call_get_full)
 
     parts_text: List[str] = []
 
@@ -397,11 +427,9 @@ def get_message_text(email_addr: str, msg_id: str) -> str:
         mime_type = payload.get("mimeType", "")
         body_data = payload.get("body", {}).get("data", "")
         if mime_type.startswith("text/plain") and body_data:
-            try:
-                decoded = base64.urlsafe_b64decode(body_data).decode("utf-8", errors="replace")
-                parts_text.append(decoded)
-            except Exception:
-                pass
+            # Gmail may omit base64 padding, and the decoder rejects that.
+            padded = body_data + "=" * (-len(body_data) % 4)
+            parts_text.append(base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace"))
         for child in payload.get("parts", []):
             _extract_parts(child)
 

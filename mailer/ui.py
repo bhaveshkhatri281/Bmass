@@ -19,7 +19,7 @@ def get_cached_connection() -> sqlite3.Connection:
     """Return a cached SQLite connection for the Streamlit process."""
     init_db()
     seed_database()
-    return get_conn()
+    return get_conn(check_same_thread=False)
 
 
 def is_in_app_window(start_str: str, end_str: str, now_utc: Optional[datetime.datetime] = None) -> bool:
@@ -48,41 +48,35 @@ def render_top_banners(conn: sqlite3.Connection, settings: Settings) -> None:
         st.success("🟢 **LIVE MODE ACTIVE** — Real emails will be dispatched from connected inboxes.")
 
     # 2. Paused inboxes banner
-    try:
-        paused_rows = conn.execute(
-            "SELECT email, paused_reason FROM inboxes WHERE active = 1 AND paused_reason IS NOT NULL AND paused_reason != ''"
-        ).fetchall()
-        if paused_rows:
-            reasons = ", ".join(f"{r['email']} ({r['paused_reason']})" for r in paused_rows)
-            st.error(f"🚨 **Paused Inboxes:** {reasons}")
-    except Exception:
-        pass
+    paused_rows = conn.execute(
+        "SELECT email, paused_reason FROM inboxes WHERE active = 1 AND paused_reason IS NOT NULL AND paused_reason != ''"
+    ).fetchall()
+    if paused_rows:
+        reasons = ", ".join(f"{r['email']} ({r['paused_reason']})" for r in paused_rows)
+        st.error(f"🚨 **Paused Inboxes:** {reasons}")
 
     # 3. Worker heartbeat banner (check during app window)
-    try:
-        in_window = is_in_app_window(
-            settings.worker.app_window_ist.start,
-            settings.worker.app_window_ist.end,
-        )
-        if in_window:
-            cur = conn.execute("SELECT value FROM app_state WHERE key = 'worker_heartbeat'")
-            row = cur.fetchone()
-            heartbeat_str = row["value"] if row else None
-            worker_down = True
-            if heartbeat_str:
-                try:
-                    hb_time = datetime.datetime.fromisoformat(heartbeat_str.replace("Z", "+00:00"))
-                    now_utc = datetime.datetime.now(datetime.timezone.utc)
-                    age_seconds = (now_utc - hb_time).total_seconds()
-                    if age_seconds <= 120:  # within 2 minutes
-                        worker_down = False
-                except Exception:
-                    worker_down = True
+    in_window = is_in_app_window(
+        settings.worker.app_window_ist.start,
+        settings.worker.app_window_ist.end,
+    )
+    if in_window:
+        cur = conn.execute("SELECT value FROM app_state WHERE key = 'worker_heartbeat'")
+        row = cur.fetchone()
+        heartbeat_str = row["value"] if row else None
+        worker_down = True
+        if heartbeat_str:
+            try:
+                hb_time = datetime.datetime.fromisoformat(heartbeat_str.replace("Z", "+00:00"))
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                age_seconds = (now_utc - hb_time).total_seconds()
+                if age_seconds <= 120:  # within 2 minutes
+                    worker_down = False
+            except ValueError:
+                worker_down = True
 
-            if worker_down:
-                st.error("🚨 **Worker is not running!** Current time is within the IST sending window, but no active worker heartbeat was detected in the last 2 minutes.")
-    except Exception:
-        pass
+        if worker_down:
+            st.error("🚨 **Worker is not running!** Current time is within the IST sending window, but no active worker heartbeat was detected in the last 2 minutes.")
 
 
 def setup_page(title: str) -> tuple[sqlite3.Connection, Settings]:

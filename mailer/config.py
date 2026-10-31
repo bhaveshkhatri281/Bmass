@@ -26,6 +26,7 @@ class SenderSettings:
     portfolio_link: str = ""
     business_address: str = ""
     list_unsubscribe_address: str = "unsubscribe@mobisa.in"
+    unsubscribe_inbox: str = ""
 
 
 @dataclass
@@ -127,15 +128,15 @@ def load_settings(path: Path | str | None = None) -> Settings:
     with open(config_path, "r", encoding="utf-8") as f:
         data: Dict[str, Any] = yaml.safe_load(f) or {}
 
-    sender_data = data.get("sender", {})
-    mode_data = data.get("mode", {})
-    worker_data = data.get("worker", {})
-    safety_data = data.get("safety", {})
-    import_data = data.get("import", {})
+    sender_data = data.get("sender") or {}
+    mode_data = data.get("mode") or {}
+    worker_data = data.get("worker") or {}
+    safety_data = data.get("safety") or {}
+    import_data = data.get("import") or {}
 
-    app_win_data = worker_data.get("app_window_ist", {})
-    recip_win_data = worker_data.get("recipient_window", {})
-    delay_data = worker_data.get("delay_between_sends_seconds", {})
+    app_win_data = worker_data.get("app_window_ist") or {}
+    recip_win_data = worker_data.get("recipient_window") or {}
+    delay_data = worker_data.get("delay_between_sends_seconds") or {}
 
     settings = Settings(
         sender=SenderSettings(
@@ -146,9 +147,11 @@ def load_settings(path: Path | str | None = None) -> Settings:
             portfolio_link=sender_data.get("portfolio_link", "") or "",
             business_address=sender_data.get("business_address", "") or "",
             list_unsubscribe_address=sender_data.get("list_unsubscribe_address", "unsubscribe@mobisa.in") or "",
+            unsubscribe_inbox=(sender_data.get("unsubscribe_inbox") or "").strip().lower(),
         ),
         mode=ModeSettings(
-            dry_run=bool(mode_data.get("dry_run", True)),
+            # Only an explicit false goes live. Blank or unreadable values stay in dry run.
+            dry_run=mode_data.get("dry_run", True) is not False,
         ),
         worker=WorkerSettings(
             app_window_ist=AppWindowSettings(

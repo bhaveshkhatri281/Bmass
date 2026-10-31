@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from mailer.config import load_settings
-from mailer.db import get_app_state, get_conn, init_db, set_app_state, utc_now_iso
+from mailer.db import get_app_state, init_db, open_conn, set_app_state, utc_now_iso
 from mailer.seed import seed_database
 from mailer.ui import is_in_app_window
 
@@ -55,7 +55,7 @@ def is_pid_alive(pid: int) -> bool:
 def acquire_worker_lock() -> bool:
     """Ensure single instance of the background worker."""
     cur_pid = os.getpid()
-    with get_conn() as conn:
+    with open_conn() as conn:
         last_pid_str = get_app_state("worker_pid", conn=conn)
         last_hb_str = get_app_state("worker_heartbeat", conn=conn)
 

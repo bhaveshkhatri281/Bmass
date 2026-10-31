@@ -19,7 +19,7 @@ col_c1, col_c2, col_c3 = st.columns(3)
 paused_all = get_app_state("paused_all", "0", conn) == "1"
 
 with col_c1:
-    if st.button("🚀 Start Worker Now", use_container_width=True):
+    if st.button("🚀 Start Worker Now", width="stretch"):
         try:
             worker_script = PROJECT_ROOT / "worker.py"
             # Detached process on Windows
@@ -39,16 +39,16 @@ with col_c1:
 
 with col_c2:
     if paused_all:
-        if st.button("▶️ Resume All Sending", type="primary", use_container_width=True):
+        if st.button("▶️ Resume All Sending", type="primary", width="stretch"):
             set_app_state("paused_all", "0", conn)
             st.rerun()
     else:
-        if st.button("⏸️ Pause All Sending", type="secondary", use_container_width=True):
+        if st.button("⏸️ Pause All Sending", type="secondary", width="stretch"):
             set_app_state("paused_all", "1", conn)
             st.rerun()
 
 with col_c3:
-    if st.button("🔍 Run Detection Now", use_container_width=True):
+    if st.button("🔍 Run Detection Now", width="stretch"):
         st.info("Detection will run in Milestone 6.")
 
 if paused_all:
@@ -87,5 +87,5 @@ else:
             "Status": status_label,
             "Next Send After": ib["next_send_after"] or "Immediately / Ready",
         })
-    st.dataframe(table_data, use_container_width=True)
+    st.dataframe(table_data, width="stretch")
 

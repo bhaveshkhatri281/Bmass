@@ -152,15 +152,30 @@ def utc_now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def get_conn(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Create a new SQLite connection with foreign keys and WAL mode configured."""
+def get_conn(db_path: Path | str | None = None, *, check_same_thread: bool = True) -> sqlite3.Connection:
+    """Create a new SQLite connection with foreign keys and WAL mode configured.
+
+    Pass check_same_thread=False only for the dashboard's cached connection:
+    Streamlit runs every script rerun on a new thread.
+    """
     target_path = Path(db_path) if db_path else DEFAULT_DB_PATH
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(target_path, timeout=30.0)
+    conn = sqlite3.connect(target_path, timeout=30.0, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
     return conn
+
+
+@contextmanager
+def open_conn(db_path: Path | str | None = None) -> Generator[sqlite3.Connection, None, None]:
+    """Yield a short-lived connection, committing on success and always closing it."""
+    conn = get_conn(db_path)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 @contextmanager
@@ -178,7 +193,7 @@ def init_db(db_path: Path | str | None = None) -> None:
     """Initialize SQLite database tables and indexes."""
     target_path = Path(db_path) if db_path else DEFAULT_DB_PATH
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    with get_conn(target_path) as conn:
+    with open_conn(target_path) as conn:
         conn.executescript(SCHEMA_SQL)
         conn.commit()
 
@@ -196,7 +211,7 @@ def get_app_state(key: str, default: Optional[str] = None, conn: Optional[sqlite
 
     if conn is not None:
         return _run(conn)
-    with get_conn() as c:
+    with open_conn() as c:
         return _run(c)
 
 
@@ -212,7 +227,7 @@ def set_app_state(key: str, value: Optional[str], conn: Optional[sqlite3.Connect
     if conn is not None:
         _run(conn)
     else:
-        with get_conn() as c:
+        with open_conn() as c:
             _run(c)
 
 
@@ -224,7 +239,7 @@ def get_inbox_by_id(inbox_id: int, conn: Optional[sqlite3.Connection] = None) ->
 
     if conn is not None:
         return _run(conn)
-    with get_conn() as c:
+    with open_conn() as c:
         return _run(c)
 
 
@@ -236,7 +251,7 @@ def get_inbox_by_email(email: str, conn: Optional[sqlite3.Connection] = None) ->
 
     if conn is not None:
         return _run(conn)
-    with get_conn() as c:
+    with open_conn() as c:
         return _run(c)
 
 
@@ -248,7 +263,7 @@ def list_inboxes(conn: Optional[sqlite3.Connection] = None) -> List[sqlite3.Row]
 
     if conn is not None:
         return _run(conn)
-    with get_conn() as c:
+    with open_conn() as c:
         return _run(c)
 
 
@@ -260,7 +275,7 @@ def get_active_steps(conn: Optional[sqlite3.Connection] = None) -> List[sqlite3.
 
     if conn is not None:
         return _run(conn)
-    with get_conn() as c:
+    with open_conn() as c:
         return _run(c)
 
 
@@ -272,7 +287,7 @@ def get_template(step_no: int, language: str, conn: Optional[sqlite3.Connection]
 
     if conn is not None:
         return _run(conn)
-    with get_conn() as c:
+    with open_conn() as c:
         return _run(c)
 
 
@@ -284,7 +299,7 @@ def is_suppressed(email: str, conn: Optional[sqlite3.Connection] = None) -> bool
 
     if conn is not None:
         return _run(conn)
-    with get_conn() as c:
+    with open_conn() as c:
         return _run(c)
 
 
@@ -301,6 +316,6 @@ def add_suppression(email: str, reason: str, conn: Optional[sqlite3.Connection] 
     if conn is not None:
         _run(conn)
     else:
-        with get_conn() as c:
+        with open_conn() as c:
             _run(c)
 

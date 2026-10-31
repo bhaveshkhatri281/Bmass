@@ -11,7 +11,7 @@ logs = conn.execute("SELECT * FROM send_log ORDER BY id DESC LIMIT 100").fetchal
 if not logs:
     st.info("No send attempts logged yet.")
 else:
-    st.dataframe([dict(l) for l in logs], use_container_width=True)
+    st.dataframe([dict(l) for l in logs], width="stretch")
 
 st.info("Log filtering, date ranges, and Excel export buttons will be fully enabled in Milestone 7.")
 

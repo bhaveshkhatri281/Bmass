@@ -13,14 +13,14 @@ langs = conn.execute("SELECT * FROM languages ORDER BY code ASC").fetchall()
 col1, col2 = st.columns(2)
 with col1:
     st.markdown("**Sequence Steps**")
-    st.dataframe([dict(s) for s in steps], use_container_width=True)
+    st.dataframe([dict(s) for s in steps], width="stretch")
 with col2:
     st.markdown("**Languages & Footers**")
-    st.dataframe([dict(l) for l in langs], use_container_width=True)
+    st.dataframe([dict(l) for l in langs], width="stretch")
 
 st.markdown("### ✉️ Email Templates")
 templates = conn.execute("SELECT * FROM templates ORDER BY step_no ASC, language ASC").fetchall()
-st.dataframe([dict(t) for t in templates], use_container_width=True)
+st.dataframe([dict(t) for t in templates], width="stretch")
 
 st.info("Template editing, variable merge check, spintax preview, and test sending will be enabled in Milestone 3.")
 

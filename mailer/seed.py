@@ -5,12 +5,13 @@ from __future__ import annotations
 import sqlite3
 from typing import Optional
 
-from mailer.db import get_conn, init_db
+from mailer.db import init_db, open_conn
 
+# delay_days counts from the previous step, so 0, 3, 4 means day 0, day 3, day 7.
 DEFAULT_STEPS = [
     (1, 0, 1),
     (2, 3, 1),
-    (3, 7, 1),
+    (3, 4, 1),
 ]
 
 DEFAULT_LANGUAGES = [
@@ -195,7 +196,7 @@ def seed_database(conn: Optional[sqlite3.Connection] = None) -> None:
         _seed(conn)
     else:
         init_db()
-        with get_conn() as c:
+        with open_conn() as c:
             _seed(c)
 
 

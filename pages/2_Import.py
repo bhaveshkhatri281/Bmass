@@ -14,5 +14,5 @@ imports = conn.execute("SELECT * FROM imports ORDER BY id DESC LIMIT 20").fetcha
 if not imports:
     st.write("No imports recorded yet.")
 else:
-    st.dataframe([dict(row) for row in imports], use_container_width=True)
+    st.dataframe([dict(row) for row in imports], width="stretch")
 

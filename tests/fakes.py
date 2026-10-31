@@ -34,7 +34,7 @@ class FakeGmailClient:
         return clean
 
     def has_token(self, email_addr: str) -> bool:
-        return email_addr.strip().lower() in self.labels or True
+        return email_addr.strip().lower() in self.labels
 
     def get_service(self, email_addr: str) -> Any:
         if self.should_raise:
@@ -90,6 +90,8 @@ class FakeGmailClient:
         return self.message_texts.get(msg_id, "")
 
     def ensure_label(self, email_addr: str, name: str) -> str:
+        if self.should_raise:
+            raise self.should_raise
         clean = email_addr.strip().lower()
         if clean not in self.labels:
             self.labels[clean] = {}

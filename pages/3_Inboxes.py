@@ -14,9 +14,15 @@ conn, settings = setup_page("Inboxes")
 
 # Refresh inbox list
 inboxes = conn.execute("SELECT * FROM inboxes ORDER BY id ASC").fetchall()
-unsub_addr = (settings.sender.list_unsubscribe_address or "").strip().lower()
+unsub_alias = settings.sender.list_unsubscribe_address
+unsub_inbox = settings.sender.unsubscribe_inbox
 
 st.markdown("### 📬 Configured Inboxes")
+
+if not unsub_inbox:
+    st.warning(f"`sender.unsubscribe_inbox` is not set, so no inbox is marked as receiving `{unsub_alias}`.")
+elif unsub_inbox not in [ib["email"].lower() for ib in inboxes]:
+    st.warning(f"`{unsub_alias}` is delivered to `{unsub_inbox}`, but that inbox has not been added yet.")
 
 if not inboxes:
     st.info("No inboxes configured yet. Fill out the form below to add and connect your first Google Workspace inbox.")
@@ -28,7 +34,7 @@ else:
         today_cap = todays_cap(ib, hard_daily_cap=settings.worker.hard_daily_cap)
         sent_24 = sent_last_24h(ib_id, conn=conn)
 
-        is_unsub_alias = ib_email.lower() == unsub_addr
+        is_unsub_alias = ib_email.lower() == unsub_inbox
 
         # Card container for each inbox
         with st.container(border=True):
@@ -36,7 +42,7 @@ else:
             with col_hdr1:
                 title_badge = f"**{ib['display_name']}** (`{ib_email}`)"
                 if is_unsub_alias:
-                    title_badge += "  🏷️ *Unsubscribe Alias Receiver*"
+                    title_badge += f"  🏷️ *Receives {unsub_alias}*"
                 st.markdown(title_badge)
                 if ib["sender_title"]:
                     st.caption(f"Title: {ib['sender_title']} | Role: `{ib['role']}`")
@@ -61,7 +67,7 @@ else:
 
             with col_btn1:
                 btn_label = "🔗 Connect Account" if not token_connected else "🔄 Reconnect Account"
-                if st.button(btn_label, key=f"auth_{ib_id}", use_container_width=True):
+                if st.button(btn_label, key=f"auth_{ib_id}", width="stretch"):
                     with st.spinner(f"Opening Google OAuth flow for {ib_email}..."):
                         try:
                             verified = connect_inbox(ib_email)
@@ -72,12 +78,12 @@ else:
 
             with col_btn2:
                 if ib["active"] and not ib["paused_reason"]:
-                    if st.button("⏸️ Pause Inbox", key=f"pause_{ib_id}", use_container_width=True):
+                    if st.button("⏸️ Pause Inbox", key=f"pause_{ib_id}", width="stretch"):
                         conn.execute("UPDATE inboxes SET paused_reason = 'Manually paused' WHERE id = ?", (ib_id,))
                         conn.commit()
                         st.rerun()
                 else:
-                    if st.button("▶️ Resume Inbox", key=f"resume_{ib_id}", use_container_width=True):
+                    if st.button("▶️ Resume Inbox", key=f"resume_{ib_id}", width="stretch"):
                         conn.execute("UPDATE inboxes SET paused_reason = NULL, paused_until = NULL WHERE id = ?", (ib_id,))
                         conn.commit()
                         st.rerun()
@@ -90,7 +96,12 @@ else:
                         edit_start_cap = st.number_input("Ramp Start Cap", min_value=1, max_value=500, value=int(ib["ramp_start_cap"]))
                         edit_inc = st.number_input("Ramp Increment", min_value=0, max_value=100, value=int(ib["ramp_increment"]))
                         edit_every = st.number_input("Ramp Every (Days)", min_value=1, max_value=30, value=int(ib["ramp_every_days"]))
-                        edit_max = st.number_input("Max Cap", min_value=1, max_value=settings.worker.hard_daily_cap, value=int(ib["max_cap"]))
+                        edit_max = st.number_input(
+                            "Max Cap",
+                            min_value=1,
+                            max_value=settings.worker.hard_daily_cap,
+                            value=min(int(ib["max_cap"]), settings.worker.hard_daily_cap),
+                        )
                         save_ramp = st.form_submit_button("Update Settings")
                         if save_ramp:
                             conn.execute(
@@ -104,7 +115,7 @@ else:
 
                     st.markdown("**30-Day Ramp Schedule Projection:**")
                     sched = get_ramp_schedule(ib, days=30, hard_daily_cap=settings.worker.hard_daily_cap)
-                    st.dataframe(sched, use_container_width=True, height=200)
+                    st.dataframe(sched, width="stretch", height=200)
 
 st.markdown("---")
 

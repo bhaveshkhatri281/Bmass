@@ -15,7 +15,7 @@ st.write(f"**Recipient Window:** {settings.worker.recipient_window.start} — {s
 
 st.markdown("### 🌍 Country Timezone & Language Rules")
 countries = conn.execute("SELECT * FROM country_settings ORDER BY sort_order ASC").fetchall()
-st.dataframe([dict(c) for c in countries], use_container_width=True)
+st.dataframe([dict(c) for c in countries], width="stretch")
 
 st.info("Interactive settings configuration and dry-run toggle will be active in Milestone 4.")
 

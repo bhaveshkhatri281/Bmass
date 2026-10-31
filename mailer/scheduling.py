@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from mailer.config import Settings, load_settings
-from mailer.db import get_conn, utc_now_iso
+from mailer.db import open_conn, utc_now_iso
 
 # US State mapping as per Section 7
 US_STATE_TIMEZONES = {
@@ -91,7 +91,7 @@ def recipient_tz(lead: Dict[str, Any] | sqlite3.Row, conn: Optional[sqlite3.Conn
     if conn is not None:
         tz_name = _lookup(conn)
     else:
-        with get_conn() as c:
+        with open_conn() as c:
             tz_name = _lookup(c)
 
     try:
@@ -189,7 +189,7 @@ def sent_last_24h(inbox_id: int, conn: Optional[sqlite3.Connection] = None) -> i
 
     if conn is not None:
         return _count(conn)
-    with get_conn() as c:
+    with open_conn() as c:
         return _count(c)
 
 
