@@ -289,6 +289,29 @@ def test_templates_page_add_and_remove_step():
     assert len([t for t in app.text_input if t.label == "Subject"]) == 6
 
 
+def test_name_exceptions_save_to_settings_file(monkeypatch, tmp_path):
+    import shutil
+
+    import mailer.config as config
+
+    settings_file = tmp_path / "settings.yaml"
+    shutil.copy(config.DEFAULT_SETTINGS_PATH, settings_file)
+    monkeypatch.setattr(config, "DEFAULT_SETTINGS_PATH", settings_file)
+
+    app = page("4_Templates.py").run()
+    box = next(t for t in app.text_area if t.label == "Names")
+    assert box.value == "Nails Inc."
+
+    box.set_value("Nails Inc.\n\n  Acme Ltd  \n")
+    app.button("FormSubmitter:name_exceptions-💾 Save names").click().run()
+
+    assert not app.exception
+    saved = config.load_settings(settings_file)
+    assert saved.names.keep_suffix == ["Nails Inc.", "Acme Ltd"]
+    assert saved.mode.dry_run is True
+    assert saved.sender.website == "mobisa.in"
+
+
 def test_paused_inbox_banner_shows_on_rerun():
     add_inbox()
     with open_conn() as conn:

@@ -32,6 +32,18 @@ def test_unsubscribe_inbox_round_trip(tmp_path):
     assert load_settings(path).sender.unsubscribe_inbox == "beedu@mobisa.in"
 
 
+def test_name_exceptions_default_and_round_trip(tmp_path):
+    assert load_from(tmp_path, "").names.keep_suffix == ["Nails Inc."]
+
+    settings = load_from(tmp_path, "names:\n  keep_suffix: []\n")
+    assert settings.names.keep_suffix == []
+
+    settings.names.keep_suffix = ["Nails Inc.", "Acme Ltd"]
+    path = tmp_path / "out.yaml"
+    save_settings(settings, path)
+    assert load_settings(path).names.keep_suffix == ["Nails Inc.", "Acme Ltd"]
+
+
 def test_delay_min_above_max_is_rejected(tmp_path):
     with pytest.raises(ConfigError):
         load_from(tmp_path, "worker:\n  delay_between_sends_seconds: { min: 300, max: 100 }\n")

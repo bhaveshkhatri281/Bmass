@@ -3,6 +3,7 @@
 import pandas as pd
 import streamlit as st
 
+from mailer.config import save_settings
 from mailer.db import get_template, utc_now_iso
 from mailer.gmail_client import has_token, send_message
 from mailer.templating import (
@@ -193,6 +194,16 @@ with st.expander("🌐 Languages & footers"):
             show_errors(errors)
             if not errors:
                 st.rerun()
+
+with st.expander("🚫 Name exceptions"):
+    st.write("Business names listed here keep their legal form, like `Inc.` or `SAS`. One name per line.")
+    with st.form("name_exceptions"):
+        names_text = st.text_area("Names", value="\n".join(settings.names.keep_suffix), height=120)
+        if st.form_submit_button("💾 Save names"):
+            settings.names.keep_suffix = [line.strip() for line in names_text.splitlines() if line.strip()]
+            save_settings(settings)
+            st.toast("Name exceptions saved.")
+            st.rerun()
 
 with st.expander("🏷️ Category phrases"):
     st.write("Matched on the lowercased raw category, then on the part before the first `;`.")

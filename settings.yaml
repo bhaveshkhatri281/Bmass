@@ -1,7 +1,7 @@
 sender:
   default_display_name: "Beedu from Mobisa"
   sender_title: ""          # filled later
-  website: ""               # filled later
+  website: "mobisa.in"
   booking_link: ""          # filled later
   portfolio_link: "https://mobisa.in"
   business_address: "Jaipur, Rajasthan, India"  # required before dry_run can be turned off
@@ -26,4 +26,7 @@ safety:
 
 import:
   skip_quality: ["Bad"]
+
+names:
+  keep_suffix: ["Nails Inc."]  # business names that keep their legal form
 

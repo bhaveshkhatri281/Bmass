@@ -30,6 +30,7 @@ def make_settings():
     settings = Settings()
     settings.sender.business_address = "1 Test Road, Mumbai"
     settings.sender.portfolio_link = "https://mobisa.in/work"
+    settings.sender.website = "mobisa.in"
     return settings
 
 
@@ -61,7 +62,7 @@ def test_merge_fields_in_body_and_footer():
     assert email.body.startswith("Hi Acme team,\n\nWho handles your Meta and TikTok ads?")
     assert "for skincare brands" in email.body
     assert "Want me to send a 15-second sample made for Acme?" in email.body
-    assert email.body.endswith('Beedu from Mobisa\nReply "stop" to opt out.')
+    assert email.body.endswith('Beedu from Mobisa · mobisa.in\nReply "stop" to opt out.')
     assert email.subject in ("quick question for Acme", "idea for Acme")
     assert email.warnings == []
 
@@ -69,26 +70,41 @@ def test_merge_fields_in_body_and_footer():
 @pytest.mark.parametrize("country", ["United States", " united states ", "USA", "US"])
 def test_us_leads_get_the_address_in_the_footer(country):
     email = rendered(make_lead(country=country))
-    assert email.body.endswith('Beedu from Mobisa, Mobisa · 1 Test Road, Mumbai\nReply "stop" to opt out.')
+    assert email.body.endswith('Beedu from Mobisa · 1 Test Road, Mumbai\nReply "stop" to opt out.')
+    assert "mobisa.in" not in email.body
 
 
 @pytest.mark.parametrize("country", ["United Kingdom", "Canada", "Germany", "", "Atlantis"])
-def test_other_leads_get_no_address(country):
+def test_other_leads_get_the_website_and_no_address(country):
     email = rendered(make_lead(country=country))
     assert "1 Test Road" not in email.body
-    assert "·" not in email.body
-    assert email.body.endswith('Beedu from Mobisa\nReply "stop" to opt out.')
+    assert email.body.endswith('Beedu from Mobisa · mobisa.in\nReply "stop" to opt out.')
 
 
-def test_blank_address_warns_only_for_us_leads():
+def test_french_footer_uses_the_website():
+    email = rendered(make_lead(language="fr", country="France"))
+    assert email.body.endswith("Beedu from Mobisa · mobisa.in\nRépondez « stop » pour ne plus recevoir nos e-mails.")
+
+
+@pytest.mark.parametrize("website", ["https://mobisa.in", "http://mobisa.in/", "HTTPS://mobisa.in/", " mobisa.in "])
+def test_footer_website_has_no_scheme(website):
     settings = make_settings()
-    settings.sender.business_address = ""
+    settings.sender.website = website
+    assert rendered(settings=settings).body.endswith('Beedu from Mobisa · mobisa.in\nReply "stop" to opt out.')
 
-    us_email = rendered(make_lead(country="United States"), settings=settings)
-    assert "{{business_address}} is empty." in us_email.warnings
-    assert us_email.body.endswith('Beedu from Mobisa\nReply "stop" to opt out.')
 
-    assert rendered(settings=settings).warnings == []
+@pytest.mark.parametrize(
+    "country, blank_setting",
+    [("United States", "business_address"), ("France", "website")],
+)
+def test_empty_footer_value_warns_and_leaves_no_separator(country, blank_setting):
+    settings = make_settings()
+    setattr(settings.sender, blank_setting, "")
+
+    email = rendered(make_lead(country=country), settings=settings)
+
+    assert "{{us_address}} is empty." in email.warnings
+    assert email.body.endswith('Beedu from Mobisa\nReply "stop" to opt out.')
 
 
 def test_all_allowed_fields_render():
@@ -258,19 +274,68 @@ def test_legal_suffixes_are_stripped(raw, expected):
         "Vertriebs-GmbH",
         "Limited Edition Soap",
         "AB Living Essentials",
-        "Sarl Martin",
+        "SA Wines",
+        "Inc Magazine",
+        "Sarlat Soap",
+        "Sasha Skin",
         "SKINthings (Schnitzler Concept GmbH)",
         "Unsa",
     ],
 )
-def test_names_without_a_real_legal_suffix_are_kept(name):
+def test_names_without_a_strippable_legal_form_are_kept(name):
     assert clean_business_name(name) == name
 
 
-@pytest.mark.parametrize("name", ["SAS", "Ltd", "(SA)", "Limited"])
+@pytest.mark.parametrize("name", ["SAS", "Ltd", "(SA)", "Limited", "SARL", "S.A.S."])
 def test_name_that_is_only_a_legal_form_is_kept(name):
-    cleaned = clean_business_name(name)
-    assert cleaned == name
+    assert clean_business_name(name) == name
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("SARL Martin", "Martin"),
+        ("SAS Dupont", "Dupont"),
+        ("SASU 4ULTRA", "4Ultra"),
+        ("EURL Groizeau", "Groizeau"),
+        ("Sarl abat jour du moulin", "abat jour du moulin"),
+        ("S.A.S. MEN", "MEN"),
+        ("S.A.R.L. Martin", "Martin"),
+        ("(SARL) Martin", "Martin"),
+        ("SARL - Martin", "Martin"),
+        ("SARL, Martin", "Martin"),
+        ("SAS: Martin", "Martin"),
+        ("Sarl GIOVANNI FERRONNERIE D'ART", "Giovanni Ferronnerie D'Art"),
+        ("SARL Martin SAS", "Martin"),
+    ],
+)
+def test_french_legal_prefixes_are_stripped(raw, expected):
+    assert clean_business_name(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "name, exceptions, expected",
+    [
+        ("Nails Inc.", ["Nails Inc."], "Nails Inc."),
+        ("Nails Inc", ["Nails Inc."], "Nails Inc"),
+        ("nails inc.", ["Nails Inc."], "nails inc."),
+        ("Nails Inc.®", ["Nails Inc."], "Nails Inc."),
+        ("NAILS INC.", ["Nails Inc."], "Nails Inc."),
+        ("SARL Martin", ["SARL Martin"], "SARL Martin"),
+        ("Other Inc.", ["Nails Inc."], "Other"),
+        ("Nails Inc.", [], "Nails"),
+    ],
+)
+def test_name_exceptions_keep_their_legal_form(name, exceptions, expected):
+    assert clean_business_name(name, exceptions) == expected
+
+
+def test_render_uses_name_exceptions_from_settings():
+    assert "Hi Nails Inc. team," in rendered(make_lead(business_name="Nails Inc.")).body
+
+    settings = make_settings()
+    settings.names.keep_suffix = []
+    assert "Hi Nails team," in rendered(make_lead(business_name="Nails Inc."), settings=settings).body
 
 
 def test_french_template_footer_and_category():
@@ -317,7 +382,7 @@ def test_empty_settings_field_is_warned():
     settings.sender.business_address = ""
     email = rendered(make_lead(country="United States"), step=3, settings=settings)
     assert "{{portfolio_link}} is empty." in email.warnings
-    assert "{{business_address}} is empty." in email.warnings
+    assert "{{us_address}} is empty." in email.warnings
 
 
 @pytest.mark.parametrize(

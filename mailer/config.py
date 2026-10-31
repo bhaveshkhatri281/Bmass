@@ -76,12 +76,18 @@ class ImportSettings:
 
 
 @dataclass
+class NameSettings:
+    keep_suffix: List[str] = field(default_factory=lambda: ["Nails Inc."])
+
+
+@dataclass
 class Settings:
     sender: SenderSettings = field(default_factory=SenderSettings)
     mode: ModeSettings = field(default_factory=ModeSettings)
     worker: WorkerSettings = field(default_factory=WorkerSettings)
     safety: SafetySettings = field(default_factory=SafetySettings)
     import_: ImportSettings = field(default_factory=ImportSettings)
+    names: NameSettings = field(default_factory=NameSettings)
 
 
 def _validate_time_str(val: str, field_name: str) -> None:
@@ -133,6 +139,7 @@ def load_settings(path: Path | str | None = None) -> Settings:
     worker_data = data.get("worker") or {}
     safety_data = data.get("safety") or {}
     import_data = data.get("import") or {}
+    names_data = data.get("names") or {}
 
     app_win_data = worker_data.get("app_window_ist") or {}
     recip_win_data = worker_data.get("recipient_window") or {}
@@ -179,6 +186,9 @@ def load_settings(path: Path | str | None = None) -> Settings:
         import_=ImportSettings(
             skip_quality=list(import_data.get("skip_quality", ["Bad"])),
         ),
+        names=NameSettings(
+            keep_suffix=list(names_data.get("keep_suffix", ["Nails Inc."]) or []),
+        ),
     )
 
     validate_settings(settings)
@@ -203,6 +213,7 @@ def save_settings(settings: Settings, path: Path | str | None = None) -> None:
         },
         "safety": asdict(settings.safety),
         "import": asdict(settings.import_),
+        "names": asdict(settings.names),
     }
 
     config_path.parent.mkdir(parents=True, exist_ok=True)

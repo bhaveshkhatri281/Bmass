@@ -18,12 +18,12 @@ DEFAULT_LANGUAGES = [
     (
         "en",
         "English",
-        "{{sender_name}}{{us_address}}\nReply \"stop\" to opt out.",
+        "{{sender_name}} · {{us_address}}\nReply \"stop\" to opt out.",
     ),
     (
         "fr",
         "French",
-        "{{sender_name}}{{us_address}}\nRépondez « stop » pour ne plus recevoir nos e-mails.",
+        "{{sender_name}} · {{us_address}}\nRépondez « stop » pour ne plus recevoir nos e-mails.",
     ),
 ]
 

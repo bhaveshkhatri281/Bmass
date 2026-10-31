@@ -7,7 +7,7 @@ import random
 import re
 import sqlite3
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from mailer.config import Settings
 from mailer.db import get_template, open_conn, transaction
@@ -53,6 +53,14 @@ _LEGAL_SUFFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Only French forms are stripped from the front. AB and SA are ordinary brand words there.
+LEGAL_PREFIXES = ("SASU", "SAS", "SARL", "EURL")
+_FRENCH_FORM = "(?:" + "|".join(r"\.?".join(prefix) + r"\.?" for prefix in LEGAL_PREFIXES) + ")"
+_LEGAL_PREFIX_RE = re.compile(
+    r"^(?:" + _FRENCH_FORM + r"|[(\[]\s*" + _FRENCH_FORM + r"\s*[)\]])(?:\s*[,:]\s*|\s+[-–—]\s+|\s+)(?=\S)",
+    re.IGNORECASE,
+)
+
 
 class TemplateError(ValueError):
     """Raised when a template cannot be rendered."""
@@ -88,11 +96,20 @@ def _strip_legal_suffix(name: str) -> str:
         text = stripped
 
 
-def clean_business_name(name: Optional[str]) -> str:
-    """Strip symbols, emojis, quotes and legal suffixes, collapse spaces, and Title Case long all-caps names."""
+def _name_key(name: str) -> str:
+    """Normalize a name for exception matching, so case and a final dot do not matter."""
+    return " ".join(name.split()).rstrip(". ").casefold()
+
+
+def clean_business_name(name: Optional[str], keep_suffix: Sequence[str] = ()) -> str:
+    """Strip symbols, emojis, quotes and legal forms, collapse spaces, and Title Case long all-caps names.
+
+    Names listed in keep_suffix keep their legal form.
+    """
     text = _NAME_SYMBOL_RE.sub("", _EMOJI_RE.sub("", name or ""))
     text = " ".join(text.split()).strip("'‘’` ").strip()
-    text = _strip_legal_suffix(text)
+    if _name_key(text) not in {_name_key(exception) for exception in keep_suffix}:
+        text = _strip_legal_suffix(_LEGAL_PREFIX_RE.sub("", text))
     if len(text) > 4 and text.isupper():
         text = _POSSESSIVE_RE.sub(lambda m: m.group().lower(), text.title())
     return text
@@ -170,17 +187,14 @@ def _merge_values(
 
     custom_line = _value(lead, "custom_line").strip()
     country = _value(lead, "country")
-    address = settings.sender.business_address
-    is_us = country.strip().lower() in US_COUNTRY_NAMES
-    if is_us and not address:
-        warnings.append("{{business_address}} is empty.")
+    website = re.sub(r"^https?://", "", settings.sender.website.strip(), flags=re.IGNORECASE).rstrip("/")
 
     return {
-        "business_name": clean_business_name(_value(lead, "business_name")),
+        "business_name": clean_business_name(_value(lead, "business_name"), settings.names.keep_suffix),
         "category": phrase,
         "country": country,
-        # The postal address shows for US leads only, inside the footer's first line.
-        "us_address": f", Mobisa · {address}" if is_us and address else "",
+        # US leads see the postal address in the footer. Everyone else sees the website.
+        "us_address": settings.sender.business_address if country.strip().lower() in US_COUNTRY_NAMES else website,
         "sender_name": _value(inbox, "display_name") or settings.sender.default_display_name,
         "sender_title": _value(inbox, "sender_title") or settings.sender.sender_title,
         "website": settings.sender.website,
@@ -253,11 +267,13 @@ def render(
         subject = f"Re: {_first_subject(lead, values, conn)}"
 
     body = _fill(template["body"], values, rng)
-    full_body = f"{body}\n\n{_fill(footer, values, rng)}"
+    # An empty {{us_address}} must not leave a dangling separator at the end of the line.
+    full_footer = re.sub(r"[ ·]+$", "", _fill(footer, values, rng), flags=re.MULTILINE)
+    full_body = f"{body}\n\n{full_footer}"
 
     used_fields = MERGE_RE.findall(subject_template + template["body"] + footer)
     for name in dict.fromkeys(used_fields):
-        if not values[name] and name not in ("custom_line", "category", "us_address"):
+        if not values[name] and name not in ("custom_line", "category"):
             warnings.append(f"{{{{{name}}}}} is empty.")
 
     return RenderedEmail(subject=subject, body=full_body, language=language, warnings=warnings)
