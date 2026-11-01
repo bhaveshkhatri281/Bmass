@@ -50,6 +50,9 @@ STOP_WORD_RE = re.compile(r"(?<![\w-])stop(?![\w-])", re.IGNORECASE)
 # "Stop by our booth" is an invitation, however short the reply is.
 STOP_VISIT_RE = re.compile(r"(?<![\w-])stop\s+(?:by|in|at|over|past)(?![\w-])", re.IGNORECASE)
 MAX_STOP_REPLY_WORDS = 8
+# A first line that is only one of these is an opt-out, even above a long signature.
+FIRST_LINE_STOP_WORDS = ("stop", "unsubscribe", "remove", "stopp", "arrêter")
+LINE_PUNCTUATION = " \t.,;:!?-–—\"'«»"
 
 # Where quoted text begins. The attribution line can wrap onto a second line.
 QUOTE_START_RE = re.compile(
@@ -77,6 +80,9 @@ def is_opt_out(body: str, footer_lines: Sequence[str] = ()) -> bool:
         if not any(footer in line for footer in footer_lines)
     )
     if CLEAR_OPT_OUT_RE.search(own_words):
+        return True
+    first_line = next((line.strip() for line in own_words.splitlines() if line.strip()), "")
+    if first_line.strip(LINE_PUNCTUATION).casefold() in FIRST_LINE_STOP_WORDS:
         return True
     if len(own_words.split()) > MAX_STOP_REPLY_WORDS:
         return False

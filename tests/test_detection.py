@@ -316,6 +316,85 @@ def test_stop_alone_is_not_enough_in_longer_or_friendly_replies(body):
     assert not is_opt_out(body)
 
 
+SIGNATURE = (
+    "John Smith\nHead of Marketing, Acme Skincare Ltd\n12 Long Road, London\n"
+    "Phone: +44 20 7946 0000\nThis email and any attachments are confidential."
+)
+
+
+@pytest.mark.parametrize(
+    "first_line",
+    [
+        "stop",
+        "STOP",
+        "Stop.",
+        "Stop!",
+        "  stop  ",
+        '"stop"',
+        "« stop »",
+        "unsubscribe",
+        "Remove",
+        "remove.",
+        "stopp",
+        "Stopp!",
+        "arrêter",
+        "ARRÊTER",
+    ],
+)
+def test_first_line_stop_word_wins_over_a_long_signature(first_line):
+    body = f"{first_line}\n\n{SIGNATURE}"
+
+    assert len(body.split()) > 8
+    assert is_opt_out(body)
+
+
+def test_blank_lines_before_the_first_line_are_skipped():
+    assert is_opt_out(f"\n\n   \nStop\n\n{SIGNATURE}")
+
+
+@pytest.mark.parametrize(
+    "first_line",
+    [
+        "Remove the second paragraph",
+        "Stop by our booth",
+        "Stopping by next week",
+        "Thanks",
+        "Please send it",
+    ],
+)
+def test_first_line_with_more_words_is_not_enough(first_line):
+    assert not is_opt_out(f"{first_line}\n\n{SIGNATURE}")
+
+
+def test_stop_word_on_a_later_line_of_a_long_reply_is_not_enough():
+    assert not is_opt_out(f"Thanks for your note\nstop\n\n{SIGNATURE}")
+
+
+def test_first_line_is_read_after_quoted_text_is_removed():
+    body = f"> stop\n\nYes please\n\n{SIGNATURE}"
+
+    assert not is_opt_out(body)
+
+
+def test_our_own_footer_cannot_be_the_first_line():
+    body = f'Reply "stop" to opt out.\nstop\n{SIGNATURE}'
+
+    assert is_opt_out(body, ['Reply "stop" to opt out.'])
+
+
+def test_quote_only_reply_is_not_an_opt_out():
+    assert not is_opt_out("On Mon, Nov 2, 2026 at 5:00 PM Beedu <sales@mobisa.in> wrote:\n> stop")
+
+
+def test_first_line_opt_out_through_a_full_run(settings, client, lead_id):
+    deliver(client, message(), f"Stop\n\n{SIGNATURE}")
+
+    assert run(settings, client) == {"unsubscribe": 1}
+
+    assert lead_status(lead_id) == "unsubscribed"
+    assert is_suppressed(LEAD)
+
+
 def test_word_limit_counts_only_the_new_words():
     quoted = "\n".join(f"> line {i} of the old message" for i in range(10))
     assert is_opt_out(f"stop\n\n{quoted}")
@@ -344,7 +423,6 @@ def test_booth_invitation_through_a_full_run_is_a_reply(settings, client, lead_i
         "stops and starts",
         "Unstoppable brand",
         "Please remove the link from the sample",
-        "remove",
         "We opted out of Meta last year",
         "",
     ],
