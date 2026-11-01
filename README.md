@@ -76,7 +76,7 @@ To enable Gmail sending and reply detection, set up Google Cloud OAuth:
 
 - **Data Directory**: SQLite database is stored at `data\mailer.db` with WAL mode enabled for concurrent dashboard and worker access.
 - **Tokens**: Per-inbox OAuth tokens are securely kept in `secrets\tokens\<email>.json`.
-- **Logs**: Daily rotating logs are placed in `logs\mailer_YYYY-MM-DD.log`.
+- **Logs**: Daily logs are placed in `logs\mailer_YYYY-MM-DD.log` and kept for 30 days. The dashboard and the worker share the same file.
 - **Configuration**: Settings are stored in `settings.yaml` and can be edited in the dashboard.
 - **Import**: The Good and Weak sheets are read as that quality when the file has no Status column. Empty or non-numeric priority becomes 5. The Import page preselects the Good sheet.
 - **Name cleanup**: Double quotes are removed anywhere in a business name, not only around it. Single quotes are removed only at the ends. Text in `(...)` or `[...]` is removed. Legal suffixes at the end of a name are removed before merging: SAS, SASU, SARL, EURL, SA, SCI, SNC, Ltd, Limited, LLC, Inc, GmbH, BV, AB, Srl, SL, with or without dots or brackets. At the start of a name, only the French forms SARL, SAS, SASU and EURL are removed, because `AB` and `SA` are also ordinary brand words there. Names in **Templates > Name exceptions** (`names.keep_suffix`) keep their bracketed text and legal form.
@@ -90,7 +90,11 @@ To enable Gmail sending and reply detection, set up Google Cloud OAuth:
 ## 5. Decisions Where the Spec Was Changed or Unclear
 
 - **Sequence timing**: step delays are 0, 3, 4 days after the previous step, so emails go out on day 0, day 3 and day 7.
-- **Dry run**: `dry_run` rows count toward caps, use the random delay between sends, and skip that lead and step for 24 hours. Leads themselves stay unchanged.
+- **Dry run**: `dry_run` rows count toward caps, use the random delay between sends, and skip that lead and step for 24 hours. Leads themselves stay unchanged. In LIVE mode, old `dry_run` rows do not count toward caps.
+- **Worker**: Settings are read again on every loop, so dashboard changes apply within seconds. If `settings.yaml` cannot be read, the last good settings stay in use. `--once` takes the same lock as `--run`.
+- **Country skip**: A country marked `skip` stops new sends and follow-ups for leads already imported. Language changes apply to future imports only.
+- **Going LIVE**: Blocked while the business address, portfolio link, website or unsubscribe address is empty.
+- **US states**: The state is the last part of the location before the country. Washington DC and places like Washingtonville, New York use Eastern time.
 - **Opt-out detection**: uses the message body only, never the subject or snippet. Quoted text is stripped first: lines starting with `>`, and everything after `On ... wrote:`, `Le ... a écrit :` or `-----Original Message-----`. Whole-word match on `stop`, `unsubscribe`, `remove me`, `opt out`, `désabonner`, `désinscrire`, `ne plus recevoir`. Bare `remove` is not an opt-out. If unsure, it is a normal reply.
 - **Send windows**: the rules stay as specified, so Australia never overlaps the app window and Hawaii barely does. The Overview page warns about this.
 - **Dry-run safety**: only an explicit `dry_run: false` goes live. A blank or unreadable value stays in dry run.

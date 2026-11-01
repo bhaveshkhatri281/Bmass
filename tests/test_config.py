@@ -2,7 +2,7 @@
 
 import pytest
 
-from mailer.config import ConfigError, Settings, load_settings, save_settings
+from mailer.config import ConfigError, Settings, live_blockers, load_settings, save_settings
 
 
 def load_from(tmp_path, text):
@@ -42,6 +42,34 @@ def test_name_exceptions_default_and_round_trip(tmp_path):
     path = tmp_path / "out.yaml"
     save_settings(settings, path)
     assert load_settings(path).names.keep_suffix == ["Nails Inc.", "Acme Ltd"]
+
+
+def test_live_blockers():
+    settings = Settings()
+    assert live_blockers(settings) == [
+        "Business address is empty.",
+        "Portfolio link is empty.",
+        "Website is empty.",
+    ]
+
+    settings.sender.business_address = "Jaipur"
+    settings.sender.portfolio_link = "https://mobisa.in"
+    settings.sender.website = "mobisa.in"
+    assert live_blockers(settings) == []
+
+
+def test_failed_save_leaves_the_file_alone(tmp_path):
+    path = tmp_path / "settings.yaml"
+    settings = Settings()
+    save_settings(settings, path)
+    original = path.read_text(encoding="utf-8")
+
+    settings.worker.hard_daily_cap = 0
+    with pytest.raises(ConfigError):
+        save_settings(settings, path)
+
+    assert path.read_text(encoding="utf-8") == original
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 def test_delay_min_above_max_is_rejected(tmp_path):

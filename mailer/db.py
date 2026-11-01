@@ -147,9 +147,14 @@ CREATE TABLE IF NOT EXISTS events (
 """
 
 
+def to_iso(moment: datetime.datetime) -> str:
+    """Format a timezone-aware datetime as the UTC ISO-8601 string used in every timestamp column."""
+    return moment.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def utc_now_iso() -> str:
     """Return current UTC time in ISO-8601 string format with Z suffix."""
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return to_iso(datetime.datetime.now(datetime.timezone.utc))
 
 
 def get_conn(db_path: Path | str | None = None, *, check_same_thread: bool = True) -> sqlite3.Connection:

@@ -5,11 +5,16 @@ from __future__ import annotations
 import datetime
 import math
 import sqlite3
-from typing import Any, Dict, List, Optional
-from zoneinfo import ZoneInfo
+from typing import Any, Dict, Iterable, List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from mailer.config import Settings, load_settings
-from mailer.db import open_conn, utc_now_iso
+from mailer.config import RecipientWindowSettings, Settings, load_settings
+from mailer.db import open_conn, to_iso, transaction
+
+IST = ZoneInfo("Asia/Kolkata")
+DEFAULT_US_TIMEZONE = "America/New_York"
+# Below this many shared minutes a day, a timezone is reported on the Overview page.
+THIN_WINDOW_MINUTES = 60
 
 US_COUNTRY_NAMES = ("united states", "usa", "us")
 
@@ -53,23 +58,15 @@ US_STATE_TIMEZONES = {
 
 
 def parse_us_state_tz(location_str: str) -> str:
-    """Parse state from location string like 'Texas, United States' and map to IANA timezone."""
-    if not location_str:
-        return "America/New_York"
+    """Map a location like 'Austin, Texas, United States' to a timezone.
 
-    # Split by comma or whitespace
-    parts = [p.strip().lower() for p in location_str.split(",")]
-    for part in parts:
-        if part in US_STATE_TIMEZONES:
-            return US_STATE_TIMEZONES[part]
-
-    # Check words inside location string
-    loc_lower = location_str.lower()
-    for state_name, tz_name in US_STATE_TIMEZONES.items():
-        if state_name in loc_lower:
-            return tz_name
-
-    return "America/New_York"
+    The state is the last part before the country. Matching only that part keeps
+    "Washington, District of Columbia" and "Washingtonville, New York" out of Pacific time.
+    """
+    parts = [p.strip().lower() for p in (location_str or "").split(",") if p.strip()]
+    while parts and parts[-1] in US_COUNTRY_NAMES:
+        parts.pop()
+    return US_STATE_TIMEZONES.get(parts[-1], DEFAULT_US_TIMEZONE) if parts else DEFAULT_US_TIMEZONE
 
 
 def recipient_tz(lead: Dict[str, Any] | sqlite3.Row, conn: Optional[sqlite3.Connection] = None) -> ZoneInfo:
@@ -82,7 +79,7 @@ def recipient_tz(lead: Dict[str, Any] | sqlite3.Row, conn: Optional[sqlite3.Conn
         try:
             return ZoneInfo(tz_name)
         except Exception:
-            return ZoneInfo("America/New_York")
+            return ZoneInfo(DEFAULT_US_TIMEZONE)
 
     # Look up in country_settings table
     def _lookup(c: sqlite3.Connection) -> str:
@@ -102,20 +99,8 @@ def recipient_tz(lead: Dict[str, Any] | sqlite3.Row, conn: Optional[sqlite3.Conn
         return ZoneInfo("Europe/London")
 
 
-def in_recipient_window(
-    lead: Dict[str, Any] | sqlite3.Row,
-    now_utc: Optional[datetime.datetime] = None,
-    settings: Optional[Settings] = None,
-    conn: Optional[sqlite3.Connection] = None,
-) -> bool:
-    """Check if recipient's local time is within their business hours window."""
-    cfg = settings or load_settings()
-    recip_win = cfg.worker.recipient_window
-    now = now_utc or datetime.datetime.now(datetime.timezone.utc)
-
-    recip_timezone = recipient_tz(lead, conn=conn)
-    local_dt = now.astimezone(recip_timezone)
-
+def _in_local_window(local_dt: datetime.datetime, recip_win: RecipientWindowSettings) -> bool:
+    """Check a local datetime against the recipient window."""
     if recip_win.weekdays_only and local_dt.weekday() >= 5:  # 5=Sat, 6=Sun
         return False
 
@@ -131,6 +116,18 @@ def in_recipient_window(
         return local_t >= start_t or local_t <= end_t
 
 
+def in_recipient_window(
+    lead: Dict[str, Any] | sqlite3.Row,
+    now_utc: Optional[datetime.datetime] = None,
+    settings: Optional[Settings] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> bool:
+    """Check if recipient's local time is within their business hours window."""
+    cfg = settings or load_settings()
+    now = now_utc or datetime.datetime.now(datetime.timezone.utc)
+    return _in_local_window(now.astimezone(recipient_tz(lead, conn=conn)), cfg.worker.recipient_window)
+
+
 def in_app_window(
     now_utc: Optional[datetime.datetime] = None,
     settings: Optional[Settings] = None,
@@ -138,8 +135,7 @@ def in_app_window(
     """Check if IST time is within app_window_ist (handles overnight spans)."""
     cfg = settings or load_settings()
     now = now_utc or datetime.datetime.now(datetime.timezone.utc)
-    ist_tz = ZoneInfo("Asia/Kolkata")
-    now_ist = now.astimezone(ist_tz).time()
+    now_ist = now.astimezone(IST).time()
 
     sh, sm = map(int, cfg.worker.app_window_ist.start.split(":"))
     eh, em = map(int, cfg.worker.app_window_ist.end.split(":"))
@@ -178,13 +174,20 @@ def todays_cap(
     return min(max_cap, hard_daily_cap, calculated_cap)
 
 
-def sent_last_24h(inbox_id: int, conn: Optional[sqlite3.Connection] = None) -> int:
-    """Count emails dispatched with result='sent' for an inbox in the rolling last 24h."""
-    cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def sent_last_24h(
+    inbox_id: int,
+    conn: Optional[sqlite3.Connection] = None,
+    include_dry_run: bool = False,
+    now_utc: Optional[datetime.datetime] = None,
+) -> int:
+    """Count sends for an inbox in the rolling last 24h, with dry-run rows when asked."""
+    now = now_utc or datetime.datetime.now(datetime.timezone.utc)
+    cutoff = to_iso(now - datetime.timedelta(hours=24))
+    results = "('sent', 'dry_run')" if include_dry_run else "('sent')"
 
     def _count(c: sqlite3.Connection) -> int:
         cur = c.execute(
-            "SELECT COUNT(*) FROM send_log WHERE inbox_id = ? AND result = 'sent' AND ts >= ?",
+            f"SELECT COUNT(*) FROM send_log WHERE inbox_id = ? AND result IN {results} AND ts >= ?",
             (inbox_id, cutoff),
         )
         return int(cur.fetchone()[0])
@@ -193,6 +196,112 @@ def sent_last_24h(inbox_id: int, conn: Optional[sqlite3.Connection] = None) -> i
         return _count(conn)
     with open_conn() as c:
         return _count(c)
+
+
+def queued_leads(conn: sqlite3.Connection) -> Iterable[sqlite3.Row]:
+    """Yield new leads in queue order: country order, priority, Good before Weak, then id."""
+    return conn.execute(
+        """SELECT l.* FROM leads l
+           LEFT JOIN country_settings c ON c.country = l.country
+           WHERE l.status = 'queued' AND COALESCE(c.skip, 0) = 0
+           ORDER BY COALESCE(c.sort_order, 100),
+                    l.priority,
+                    CASE l.quality WHEN 'Good' THEN 0 WHEN 'Weak' THEN 1 ELSE 2 END,
+                    l.id"""
+    )
+
+
+def due_follow_ups(inbox_id: int, now_utc: datetime.datetime, conn: sqlite3.Connection) -> Iterable[sqlite3.Row]:
+    """Yield leads assigned to this inbox whose next step is due, oldest first."""
+    return conn.execute(
+        """SELECT l.* FROM leads l
+           LEFT JOIN country_settings c ON c.country = l.country
+           WHERE l.status = 'in_sequence' AND l.inbox_id = ? AND l.next_due_at <= ? AND COALESCE(c.skip, 0) = 0
+           ORDER BY l.next_due_at, l.id""",
+        (inbox_id, to_iso(now_utc)),
+    )
+
+
+def window_overlap_minutes(
+    tz_name: str,
+    settings: Settings,
+    day: Optional[datetime.date] = None,
+) -> int:
+    """Count the minutes in a weekday when the app window and this timezone's recipient window both hold."""
+    today = day or datetime.date.today()
+    # Wednesday, so weekends never hide a timezone that is fine on working days.
+    wednesday = today + datetime.timedelta(days=(2 - today.weekday()) % 7)
+    midnight = datetime.datetime.combine(wednesday, datetime.time(0), tzinfo=datetime.timezone.utc)
+    zone = ZoneInfo(tz_name)
+
+    minutes = 0
+    for offset in range(24 * 60):
+        moment = midnight + datetime.timedelta(minutes=offset)
+        if in_app_window(moment, settings) and _in_local_window(moment.astimezone(zone), settings.worker.recipient_window):
+            minutes += 1
+    return minutes
+
+
+def thin_window_leads(settings: Settings, conn: sqlite3.Connection) -> Dict[str, int]:
+    """Return queued lead counts per timezone that barely overlaps the app window."""
+    rows = conn.execute(
+        """SELECT country,
+                  CASE WHEN lower(country) IN ('united states', 'usa', 'us') THEN location ELSE '' END AS location,
+                  COUNT(*) AS leads
+           FROM leads WHERE status = 'queued' GROUP BY 1, 2"""
+    ).fetchall()
+
+    overlap: Dict[str, int] = {}
+    counts: Dict[str, int] = {}
+    for row in rows:
+        tz_name = recipient_tz(row, conn=conn).key
+        if tz_name not in overlap:
+            overlap[tz_name] = window_overlap_minutes(tz_name, settings)
+        if overlap[tz_name] < THIN_WINDOW_MINUTES:
+            counts[tz_name] = counts.get(tz_name, 0) + row["leads"]
+    return counts
+
+
+def save_country_settings(rows: List[Dict[str, Any]], conn: sqlite3.Connection) -> List[str]:
+    """Validate and replace the country table, returning errors."""
+    languages = {row["code"] for row in conn.execute("SELECT code FROM languages")}
+    errors: List[str] = []
+    cleaned: Dict[str, tuple] = {}
+
+    for row in rows:
+        country = str(row.get("country") or "").strip()
+        language = str(row.get("language") or "").strip()
+        timezone = str(row.get("timezone") or "").strip()
+        if not country and not language and not timezone:
+            continue
+        if not country:
+            errors.append("Every row needs a country.")
+            continue
+        if country in cleaned:
+            errors.append(f"Duplicate country: {country}")
+        if language not in languages:
+            errors.append(f"{country}: unknown language '{language}'.")
+        try:
+            ZoneInfo(timezone)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            errors.append(f"{country}: unknown timezone '{timezone}'.")
+        try:
+            sort_order = int(row.get("sort_order"))
+        except (TypeError, ValueError):
+            errors.append(f"{country}: sort_order must be a number.")
+            continue
+        cleaned[country] = (language, timezone, 1 if row.get("skip") else 0, sort_order)
+
+    if errors:
+        return errors
+
+    with transaction(conn):
+        conn.execute("DELETE FROM country_settings")
+        conn.executemany(
+            "INSERT INTO country_settings (country, language, timezone, skip, sort_order) VALUES (?, ?, ?, ?, ?)",
+            [(country, *values) for country, values in cleaned.items()],
+        )
+    return []
 
 
 def get_ramp_schedule(

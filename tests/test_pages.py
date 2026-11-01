@@ -289,14 +289,8 @@ def test_templates_page_add_and_remove_step():
     assert len([t for t in app.text_input if t.label == "Subject"]) == 6
 
 
-def test_name_exceptions_save_to_settings_file(monkeypatch, tmp_path):
-    import shutil
-
+def test_name_exceptions_save_to_settings_file(settings_file):
     import mailer.config as config
-
-    settings_file = tmp_path / "settings.yaml"
-    shutil.copy(config.DEFAULT_SETTINGS_PATH, settings_file)
-    monkeypatch.setattr(config, "DEFAULT_SETTINGS_PATH", settings_file)
 
     app = page("4_Templates.py").run()
     box = next(t for t in app.text_area if t.label == "Names")
@@ -310,6 +304,137 @@ def test_name_exceptions_save_to_settings_file(monkeypatch, tmp_path):
     assert saved.names.keep_suffix == ["Nails Inc.", "Acme Ltd"]
     assert saved.mode.dry_run is True
     assert saved.sender.website == "mobisa.in"
+
+
+def settings_with(settings_file, change):
+    from mailer.config import load_settings, save_settings
+
+    settings = load_settings(settings_file)
+    change(settings)
+    save_settings(settings, settings_file)
+
+
+def text_box(app, label):
+    return next(t for t in app.text_input if t.label == label)
+
+
+def test_campaign_saves_sender_settings(settings_file):
+    from mailer.config import load_settings
+
+    app = page("5_Campaign.py").run()
+    text_box(app, "Booking link").set_value("https://cal.com/beedu")
+    text_box(app, "Inbox receiving the unsubscribe address").set_value("Sales@Mobisa.in")
+    app.button("FormSubmitter:sender_form-💾 Save sender").click().run()
+
+    assert not app.exception
+    saved = load_settings(settings_file)
+    assert saved.sender.booking_link == "https://cal.com/beedu"
+    assert saved.sender.unsubscribe_inbox == "sales@mobisa.in"
+    assert saved.mode.dry_run is True
+
+
+def test_campaign_saves_worker_settings(settings_file):
+    from mailer.config import load_settings
+
+    app = page("5_Campaign.py").run()
+    next(box for box in app.number_input if box.label == "Hard daily cap per inbox").set_value(90)
+    next(box for box in app.checkbox if box.label == "Weekdays only").set_value(False)
+    app.button("FormSubmitter:worker_form-💾 Save worker settings").click().run()
+
+    assert not app.exception
+    saved = load_settings(settings_file)
+    assert saved.worker.hard_daily_cap == 90
+    assert saved.worker.recipient_window.weekdays_only is False
+
+
+def test_campaign_rejects_bad_time_and_keeps_the_file(settings_file):
+    from mailer.config import load_settings
+
+    app = page("5_Campaign.py").run()
+    text_box(app, "App window start (IST, HH:MM)").set_value("25:99")
+    app.button("FormSubmitter:worker_form-💾 Save worker settings").click().run()
+
+    assert not app.exception
+    assert any("Invalid time" in e.value for e in app.error)
+    assert load_settings(settings_file).worker.app_window_ist.start == "18:00"
+
+
+def test_campaign_blocks_live_without_business_address(settings_file):
+    from mailer.config import load_settings
+
+    settings_with(settings_file, lambda s: setattr(s.sender, "business_address", ""))
+
+    app = page("5_Campaign.py").run()
+    button(app, "Switch to LIVE").click().run()
+
+    assert any("Business address is empty" in e.value for e in app.error)
+    assert load_settings(settings_file).mode.dry_run is True
+
+
+def test_campaign_asks_before_going_live_and_stays_dry_until_confirmed(settings_file):
+    from mailer.config import load_settings
+
+    app = page("5_Campaign.py").run()
+    button(app, "Switch to LIVE").click().run()
+
+    assert not app.exception
+    assert any(b.label == "Yes, go LIVE" for b in app.button)
+    assert load_settings(settings_file).mode.dry_run is True
+
+
+def test_campaign_returns_to_dry_run(settings_file):
+    from mailer.config import load_settings
+
+    settings_with(settings_file, lambda s: setattr(s.mode, "dry_run", False))
+
+    app = page("5_Campaign.py").run()
+    button(app, "Back to Dry Run").click().run()
+
+    assert not app.exception
+    assert load_settings(settings_file).mode.dry_run is True
+
+
+def test_overview_shows_cap_and_dry_runs():
+    from mailer.db import utc_now_iso
+
+    add_inbox()
+    with open_conn() as conn:
+        conn.execute(
+            "INSERT INTO send_log (ts, inbox_id, lead_email, step_no, result) VALUES (?, 1, 'x@y.z', 1, 'dry_run')",
+            (utc_now_iso(),),
+        )
+
+    app = page("1_Overview.py").run()
+
+    assert not app.exception
+    cell = app.dataframe[0].value["Dry Runs Last 24h / Cap"].iloc[0]
+    assert cell.startswith("1 / ")
+
+
+def test_overview_warns_about_timezones_that_never_send():
+    stamp = "2026-11-01T00:00:00Z"
+    with open_conn() as conn:
+        conn.execute(
+            "INSERT INTO leads (email, country, created_at, updated_at) VALUES ('a@x.com', 'Australia', ?, ?)",
+            (stamp, stamp),
+        )
+
+    app = page("1_Overview.py").run()
+
+    assert any("Australia/Sydney: 1 leads" in w.value for w in app.warning)
+
+
+def test_overview_shows_no_window_warning_for_normal_leads():
+    stamp = "2026-11-01T00:00:00Z"
+    with open_conn() as conn:
+        conn.execute(
+            "INSERT INTO leads (email, country, created_at, updated_at) VALUES ('b@x.com', 'France', ?, ?)",
+            (stamp, stamp),
+        )
+
+    app = page("1_Overview.py").run()
+
+    assert not any("working hours" in w.value for w in app.warning)
 
 
 def test_paused_inbox_banner_shows_on_rerun():

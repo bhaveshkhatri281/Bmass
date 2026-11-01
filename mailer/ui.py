@@ -4,39 +4,23 @@ from __future__ import annotations
 
 import datetime
 import sqlite3
-from typing import Optional
-from zoneinfo import ZoneInfo
 
 import streamlit as st
 
 from mailer.config import Settings, load_settings
 from mailer.db import get_conn, init_db
+from mailer.logs import setup_logging
+from mailer.scheduling import in_app_window
 from mailer.seed import seed_database
 
 
 @st.cache_resource
 def get_cached_connection() -> sqlite3.Connection:
     """Return a cached SQLite connection for the Streamlit process."""
+    setup_logging()
     init_db()
     seed_database()
     return get_conn(check_same_thread=False)
-
-
-def is_in_app_window(start_str: str, end_str: str, now_utc: Optional[datetime.datetime] = None) -> bool:
-    """Check if current time in Asia/Kolkata is within the start/end window (handles overnight)."""
-    now = now_utc or datetime.datetime.now(datetime.timezone.utc)
-    ist_tz = ZoneInfo("Asia/Kolkata")
-    now_ist = now.astimezone(ist_tz).time()
-
-    sh, sm = map(int, start_str.split(":"))
-    eh, em = map(int, end_str.split(":"))
-    start_t = datetime.time(sh, sm)
-    end_t = datetime.time(eh, em)
-
-    if start_t <= end_t:
-        return start_t <= now_ist <= end_t
-    else:  # crosses midnight, e.g. 18:00 to 00:30
-        return now_ist >= start_t or now_ist <= end_t
 
 
 def render_top_banners(conn: sqlite3.Connection, settings: Settings) -> None:
@@ -56,11 +40,7 @@ def render_top_banners(conn: sqlite3.Connection, settings: Settings) -> None:
         st.error(f"🚨 **Paused Inboxes:** {reasons}")
 
     # 3. Worker heartbeat banner (check during app window)
-    in_window = is_in_app_window(
-        settings.worker.app_window_ist.start,
-        settings.worker.app_window_ist.end,
-    )
-    if in_window:
+    if in_app_window(settings=settings):
         cur = conn.execute("SELECT value FROM app_state WHERE key = 'worker_heartbeat'")
         row = cur.fetchone()
         heartbeat_str = row["value"] if row else None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -123,6 +124,17 @@ def validate_settings(settings: Settings) -> None:
         raise ConfigError("safety.pause_on_quota_hours must be > 0.")
 
 
+def live_blockers(settings: Settings) -> List[str]:
+    """Return what must be filled in before LIVE mode is allowed."""
+    required = {
+        "Business address": settings.sender.business_address,
+        "Portfolio link": settings.sender.portfolio_link,
+        "Website": settings.sender.website,
+        "Unsubscribe address": settings.sender.list_unsubscribe_address,
+    }
+    return [f"{label} is empty." for label, value in required.items() if not value.strip()]
+
+
 def load_settings(path: Path | str | None = None) -> Settings:
     """Load and validate settings from a YAML file."""
     config_path = Path(path) if path else DEFAULT_SETTINGS_PATH
@@ -217,6 +229,9 @@ def save_settings(settings: Settings, path: Path | str | None = None) -> None:
     }
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(raw, f, sort_keys=False, default_flow_style=False)
+    # The worker rereads this file on every loop, so it must never see half a write.
+    temp_path = config_path.with_suffix(".yaml.tmp")
+    with open(temp_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(raw, f, sort_keys=False, default_flow_style=False, allow_unicode=True)
+    os.replace(temp_path, config_path)
 

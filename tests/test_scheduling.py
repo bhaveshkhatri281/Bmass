@@ -5,11 +5,17 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from mailer.config import Settings
+from mailer.db import open_conn
 from mailer.scheduling import (
     in_app_window,
     in_recipient_window,
     parse_us_state_tz,
+    queued_leads,
+    save_country_settings,
+    sent_last_24h,
+    thin_window_leads,
     todays_cap,
+    window_overlap_minutes,
 )
 
 
@@ -89,4 +95,161 @@ def test_recipient_window_weekdays_and_hours():
     # Saturday 14:00 UTC = Weekend (excluded)
     sat_utc = datetime.datetime(2026, 10, 31, 14, 0, tzinfo=datetime.timezone.utc)
     assert in_recipient_window(lead_ny, now_utc=sat_utc, settings=cfg) is False
+
+
+def test_same_utc_time_differs_by_recipient():
+    cfg = Settings()
+    # 10:00 New York, 07:00 Los Angeles, 16:00 Paris
+    moment = datetime.datetime(2026, 11, 4, 15, 0, tzinfo=datetime.timezone.utc)
+
+    new_york = {"country": "United States", "location": "New York, New York, United States"}
+    los_angeles = {"country": "United States", "location": "Los Angeles, California, United States"}
+    paris = {"country": "France", "location": "Paris, France"}
+
+    assert in_recipient_window(new_york, moment, cfg) is True
+    assert in_recipient_window(los_angeles, moment, cfg) is False
+    assert in_recipient_window(paris, moment, cfg) is True
+
+    # 18:00 Paris is closed while New York stays open.
+    later = datetime.datetime(2026, 11, 4, 17, 0, tzinfo=datetime.timezone.utc)
+    assert in_recipient_window(paris, later, cfg) is False
+    assert in_recipient_window(new_york, later, cfg) is True
+
+
+def test_friday_evening_in_ist_is_still_friday_for_recipient():
+    cfg = Settings()
+    # 00:15 Saturday IST is 13:45 Friday in New York.
+    moment = datetime.datetime(2026, 11, 6, 18, 45, tzinfo=datetime.timezone.utc)
+    lead = {"country": "United States", "location": "New York, United States"}
+
+    assert in_recipient_window(lead, moment, cfg) is True
+
+
+@pytest.mark.parametrize(
+    "location, expected",
+    [
+        ("Washington, DC, United States", "America/New_York"),
+        ("Washington, D.C.", "America/New_York"),
+        ("Washington DC, District of Columbia, United States", "America/New_York"),
+        ("Washington, District of Columbia, United States", "America/New_York"),
+        ("Washingtonville, New York, United States", "America/New_York"),
+        ("Washington Heights, New York, United States", "America/New_York"),
+        ("Oregon, Ohio, United States", "America/New_York"),
+        ("Washington, United States", "America/Los_Angeles"),
+        ("Seattle, Washington, United States", "America/Los_Angeles"),
+        ("Arkansas, United States", "America/Chicago"),
+        ("Kansas City, Missouri, United States", "America/Chicago"),
+        ("New Mexico, United States", "America/Denver"),
+        ("Georgia, United States", "America/New_York"),
+        ("TX, United States", "America/New_York"),
+        ("United States", "America/New_York"),
+    ],
+)
+def test_us_state_is_the_part_before_the_country(location, expected):
+    assert parse_us_state_tz(location) == expected
+
+
+def test_queue_order_is_stable_on_ties():
+    stamp = "2026-11-01T00:00:00Z"
+    with open_conn() as conn:
+        for email, country, priority, quality in [
+            ("c@x.com", "France", 1, "Good"),
+            ("b@x.com", "United Kingdom", 2, "Good"),
+            ("a@x.com", "United Kingdom", 1, "Weak"),
+            ("d@x.com", "United Kingdom", 1, ""),
+            ("e@x.com", "United Kingdom", 1, "Good"),
+        ]:
+            conn.execute(
+                "INSERT INTO leads (email, country, priority, quality, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (email, country, priority, quality, stamp, stamp),
+            )
+        order = [row["email"] for row in queued_leads(conn)]
+
+    assert order == ["e@x.com", "a@x.com", "d@x.com", "b@x.com", "c@x.com"]
+
+
+def test_sent_last_24h_counts_only_what_was_asked():
+    now = datetime.datetime(2026, 11, 4, 15, 0, tzinfo=datetime.timezone.utc)
+    with open_conn() as conn:
+        conn.execute("INSERT INTO inboxes (id, email, display_name, ramp_start_date, created_at) VALUES (1, 'a@b.c', 'A', '2026-11-01', 'x')")
+        rows = [
+            ("2026-11-04T14:00:00Z", "sent"),
+            ("2026-11-04T14:00:00Z", "dry_run"),
+            ("2026-11-04T14:00:00Z", "test"),
+            ("2026-11-04T14:00:00Z", "error"),
+            ("2026-11-03T14:59:00Z", "sent"),
+        ]
+        conn.executemany(
+            "INSERT INTO send_log (ts, inbox_id, lead_email, step_no, result) VALUES (?, 1, 'x@y.z', 1, ?)",
+            rows,
+        )
+        assert sent_last_24h(1, conn, now_utc=now) == 1
+        assert sent_last_24h(1, conn, include_dry_run=True, now_utc=now) == 2
+
+
+@pytest.mark.parametrize(
+    "tz_name, minimum, maximum",
+    [
+        ("Australia/Sydney", 0, 0),
+        ("Pacific/Honolulu", 0, 59),
+        ("America/New_York", 240, 400),
+        ("Europe/Paris", 100, 300),
+    ],
+)
+def test_window_overlap(tz_name, minimum, maximum):
+    minutes = window_overlap_minutes(tz_name, Settings(), datetime.date(2026, 11, 4))
+    assert minimum <= minutes <= maximum
+
+
+def test_thin_window_leads_reports_only_poor_timezones():
+    stamp = "2026-11-01T00:00:00Z"
+    with open_conn() as conn:
+        for email, country, location, status in [
+            ("a@x.com", "Australia", "Sydney", "queued"),
+            ("b@x.com", "Australia", "Perth", "queued"),
+            ("c@x.com", "United States", "Hawaii, United States", "queued"),
+            ("d@x.com", "United States", "Texas, United States", "queued"),
+            ("e@x.com", "France", "Paris", "queued"),
+            ("f@x.com", "Australia", "Sydney", "finished"),
+        ]:
+            conn.execute(
+                "INSERT INTO leads (email, country, location, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (email, country, location, status, stamp, stamp),
+            )
+        assert thin_window_leads(Settings(), conn) == {"Australia/Sydney": 2, "Pacific/Honolulu": 1}
+
+
+def country_rows(conn):
+    return [dict(row) for row in conn.execute("SELECT * FROM country_settings ORDER BY sort_order")]
+
+
+def test_country_table_saves_and_adds_a_country():
+    with open_conn() as conn:
+        rows = country_rows(conn)
+        rows[0]["sort_order"] = 7
+        rows.append({"country": "Malta", "language": "en", "timezone": "Europe/Malta", "skip": False, "sort_order": 50})
+        rows.append({"country": None, "language": None, "timezone": None, "skip": None, "sort_order": None})
+
+        assert save_country_settings(rows, conn) == []
+        assert conn.execute("SELECT timezone FROM country_settings WHERE country = 'Malta'").fetchone()[0] == "Europe/Malta"
+        assert conn.execute("SELECT sort_order FROM country_settings WHERE country = 'United States'").fetchone()[0] == 7
+
+
+@pytest.mark.parametrize(
+    "change, error",
+    [
+        ({"timezone": "Mars/Base"}, "unknown timezone"),
+        ({"language": "xx"}, "unknown language"),
+        ({"sort_order": "first"}, "sort_order must be a number"),
+        ({"country": ""}, "needs a country"),
+    ],
+)
+def test_country_table_rejects_bad_rows(change, error):
+    with open_conn() as conn:
+        rows = country_rows(conn)
+        rows[0].update(change)
+        errors = save_country_settings(rows, conn)
+
+        assert any(error in message for message in errors)
+        assert conn.execute("SELECT COUNT(*) FROM country_settings").fetchone()[0] == 35
 

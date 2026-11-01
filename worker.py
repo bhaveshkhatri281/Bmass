@@ -6,29 +6,19 @@ import argparse
 import datetime
 import logging
 import os
-import sys
+import sqlite3
 import time
-from pathlib import Path
+from typing import Optional
 
-from mailer.config import load_settings
+import yaml
+
+from mailer import engine
+from mailer.config import ConfigError, Settings, load_settings
 from mailer.db import get_app_state, init_db, open_conn, set_app_state, utc_now_iso
+from mailer.logs import setup_logging
+from mailer.scheduling import in_app_window
 from mailer.seed import seed_database
-from mailer.ui import is_in_app_window
 
-# Configure logging
-LOG_DIR = Path(__file__).resolve().parent / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-today_str = datetime.date.today().isoformat()
-log_file = LOG_DIR / f"mailer_{today_str}.log"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler(log_file, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
 logger = logging.getLogger("worker")
 
 
@@ -56,6 +46,8 @@ def acquire_worker_lock() -> bool:
     """Ensure single instance of the background worker."""
     cur_pid = os.getpid()
     with open_conn() as conn:
+        # Hold the write lock while checking, so two starts cannot both pass.
+        conn.execute("BEGIN IMMEDIATE")
         last_pid_str = get_app_state("worker_pid", conn=conn)
         last_hb_str = get_app_state("worker_heartbeat", conn=conn)
 
@@ -68,7 +60,7 @@ def acquire_worker_lock() -> bool:
                 if age < 60 and is_pid_alive(last_pid):
                     logger.warning("Another active worker (PID %s, heartbeat %.1fs ago) is running. Exiting.", last_pid, age)
                     return False
-            except Exception as e:
+            except ValueError as e:
                 logger.warning("Error checking existing worker state: %s", e)
 
         set_app_state("worker_pid", str(cur_pid), conn=conn)
@@ -76,9 +68,28 @@ def acquire_worker_lock() -> bool:
         return True
 
 
+def release_worker_lock() -> None:
+    """Clear the lock on exit, so the dashboard shows a stopped worker straight away."""
+    with open_conn() as conn:
+        if get_app_state("worker_pid", conn=conn) == str(os.getpid()):
+            set_app_state("worker_pid", None, conn=conn)
+            set_app_state("worker_heartbeat", None, conn=conn)
+
+
 def update_heartbeat() -> None:
     """Record current UTC timestamp into app_state worker_heartbeat."""
     set_app_state("worker_heartbeat", utc_now_iso())
+
+
+def reload_settings(last_good: Optional[Settings]) -> Settings:
+    """Read settings fresh, so dashboard changes apply on the next loop. Keep the last good copy on failure."""
+    try:
+        return load_settings()
+    except (ConfigError, OSError, yaml.YAMLError) as e:
+        if last_good is None:
+            raise
+        logger.error("Could not read settings, keeping the previous ones: %s", e)
+        return last_good
 
 
 def run_once() -> None:
@@ -86,46 +97,54 @@ def run_once() -> None:
     logger.info("Executing worker in single-tick mode (--once).")
     init_db()
     seed_database()
-    update_heartbeat()
-    # Engine tick will be hooked in Milestone 4
-    logger.info("Single tick complete.")
+    if not acquire_worker_lock():
+        return
+    try:
+        sent = engine.tick(load_settings())
+        logger.info("Single tick complete. Email logged: %s", sent)
+    finally:
+        release_worker_lock()
 
 
 def run_loop() -> None:
     """Run the main sending loop inside the configured IST sending window."""
+    init_db()
+    seed_database()
     if not acquire_worker_lock():
         return
 
     logger.info("Worker started with PID %d.", os.getpid())
-    init_db()
-    seed_database()
+    settings: Optional[Settings] = None
 
     try:
-        settings = load_settings()
         while True:
             update_heartbeat()
-            # Check app window
-            in_window = is_in_app_window(
-                settings.worker.app_window_ist.start,
-                settings.worker.app_window_ist.end,
-            )
-            if not in_window:
+            settings = reload_settings(settings)
+
+            if not in_app_window(settings=settings):
                 logger.info("Outside of IST sending window (%s to %s). Worker stopping.",
                             settings.worker.app_window_ist.start, settings.worker.app_window_ist.end)
                 break
 
-            paused_all = get_app_state("paused_all", "0") == "1"
-            if paused_all:
+            if get_app_state("paused_all", "0") == "1":
                 time.sleep(settings.worker.idle_sleep_seconds)
                 continue
 
-            # In Milestone 4: engine.tick()
-            time.sleep(settings.worker.idle_sleep_seconds)
+            # Detection and safety join this loop in Milestone 6.
+            try:
+                sent_something = engine.tick(settings)
+            except (sqlite3.Error, OSError, ValueError, KeyError) as e:
+                # One bad tick must never stop the worker for the night.
+                logger.exception("Tick failed: %s", e)
+                sent_something = False
+
+            time.sleep(1 if sent_something else settings.worker.idle_sleep_seconds)
     except KeyboardInterrupt:
         logger.info("Worker stopped by user.")
     except Exception as e:
         logger.exception("Unexpected error in worker loop: %s", e)
     finally:
+        release_worker_lock()
         logger.info("Worker exited.")
 
 
@@ -134,6 +153,8 @@ def main() -> None:
     parser.add_argument("--run", action="store_true", help="Run long-lived worker loop inside sending window")
     parser.add_argument("--once", action="store_true", help="Run a single engine tick")
     args = parser.parse_args()
+
+    setup_logging()
 
     if args.once:
         run_once()
@@ -145,4 +166,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

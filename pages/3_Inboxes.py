@@ -32,7 +32,7 @@ else:
         ib_email = ib["email"]
         token_connected = has_token(ib_email)
         today_cap = todays_cap(ib, hard_daily_cap=settings.worker.hard_daily_cap)
-        sent_24 = sent_last_24h(ib_id, conn=conn)
+        sent_24 = sent_last_24h(ib_id, conn=conn, include_dry_run=settings.mode.dry_run)
 
         is_unsub_alias = ib_email.lower() == unsub_inbox
 
