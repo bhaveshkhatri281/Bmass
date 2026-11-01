@@ -267,10 +267,72 @@ def test_french_stop_opts_out(settings, client, lead_id):
         "Comment me désinscrire ?",
         "Je ne veux ne plus recevoir ça",
         "Merci\n\nstop\n",
+        "Stop merci",
+        "please just stop this now thank you so",  # 8 words
+        "Take me off your list",
+        "take  me  off",
     ],
 )
 def test_opt_out_phrases(body):
     assert is_opt_out(body)
+
+
+LONG_REPLY = "Thanks for reaching out, we already work with an agency and are happy with them, but "
+
+
+@pytest.mark.parametrize(
+    "ending",
+    [
+        "please unsubscribe us.",
+        "remove me from this list.",
+        "I would like to opt out.",
+        "please stop emailing this address.",
+        "please stop sending these.",
+        "please take me off your list.",
+        "merci de nous désabonner.",
+        "je souhaite me désinscrire.",
+        "je ne veux ne plus recevoir ces messages.",
+    ],
+)
+def test_clear_phrase_counts_in_a_long_reply(ending):
+    assert is_opt_out(LONG_REPLY + ending)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "please stop by our booth",
+        "Please stop by our booth at the show next week",
+        "Stop by anytime",
+        "stop in on Friday",
+        "stop over at our stand",
+        "stop past our office",
+        "please just stop this now thank you so much",  # 9 words
+        "We will stop running Meta ads next month and move everything to TikTok",
+        LONG_REPLY + "we may stop using them next year.",
+    ],
+)
+def test_stop_alone_is_not_enough_in_longer_or_friendly_replies(body):
+    assert not is_opt_out(body)
+
+
+def test_word_limit_counts_only_the_new_words():
+    quoted = "\n".join(f"> line {i} of the old message" for i in range(10))
+    assert is_opt_out(f"stop\n\n{quoted}")
+
+
+def test_footer_lines_do_not_count_toward_the_word_limit():
+    body = 'stop\nReply "stop" to opt out now please thank you very much'
+    assert is_opt_out(body, ['Reply "stop" to opt out'])
+
+
+def test_booth_invitation_through_a_full_run_is_a_reply(settings, client, lead_id):
+    deliver(client, message(), "please stop by our booth")
+
+    assert run(settings, client) == {"reply": 1}
+
+    assert lead_status(lead_id) == "replied"
+    assert not is_suppressed(LEAD)
 
 
 @pytest.mark.parametrize(

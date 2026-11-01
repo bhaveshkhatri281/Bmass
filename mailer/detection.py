@@ -30,20 +30,26 @@ AUTO_REPLY_SUBJECT_RE = re.compile(
 )
 EMAIL_ADDRESS_RE = re.compile(r"[^@\s<>\"'(),;:]+@[^@\s<>\"'(),;:]+\.[A-Za-z]{2,}")
 
-OPT_OUT_PHRASES = (
-    "stop",
+CLEAR_OPT_OUT_PHRASES = (
     "unsubscribe",
     "remove me",
     "opt out",
+    "stop emailing",
+    "stop sending",
+    "take me off",
     "désabonner",
     "désinscrire",
     "ne plus recevoir",
 )
 # Hyphens count as part of a word, so "non-stop" is not an opt-out.
-OPT_OUT_RE = re.compile(
-    r"(?<![\w-])(?:" + "|".join(re.escape(p).replace(r"\ ", r"\s+") for p in OPT_OUT_PHRASES) + r")(?![\w-])",
+CLEAR_OPT_OUT_RE = re.compile(
+    r"(?<![\w-])(?:" + "|".join(re.escape(p).replace(r"\ ", r"\s+") for p in CLEAR_OPT_OUT_PHRASES) + r")(?![\w-])",
     re.IGNORECASE,
 )
+STOP_WORD_RE = re.compile(r"(?<![\w-])stop(?![\w-])", re.IGNORECASE)
+# "Stop by our booth" is an invitation, however short the reply is.
+STOP_VISIT_RE = re.compile(r"(?<![\w-])stop\s+(?:by|in|at|over|past)(?![\w-])", re.IGNORECASE)
+MAX_STOP_REPLY_WORDS = 8
 
 # Where quoted text begins. The attribution line can wrap onto a second line.
 QUOTE_START_RE = re.compile(
@@ -66,11 +72,15 @@ def strip_quoted_text(text: str) -> str:
 
 def is_opt_out(body: str, footer_lines: Sequence[str] = ()) -> bool:
     """Return True if the person's own words ask to opt out. Unsure means a normal reply."""
-    own_words = [
+    own_words = "\n".join(
         line for line in strip_quoted_text(body).splitlines()
         if not any(footer in line for footer in footer_lines)
-    ]
-    return OPT_OUT_RE.search("\n".join(own_words)) is not None
+    )
+    if CLEAR_OPT_OUT_RE.search(own_words):
+        return True
+    if len(own_words.split()) > MAX_STOP_REPLY_WORDS:
+        return False
+    return STOP_WORD_RE.search(STOP_VISIT_RE.sub(" ", own_words)) is not None
 
 
 def is_bounce(message: MessageMeta) -> bool:
