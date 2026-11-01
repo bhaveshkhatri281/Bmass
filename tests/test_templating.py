@@ -278,7 +278,6 @@ def test_legal_suffixes_are_stripped(raw, expected):
         "Inc Magazine",
         "Sarlat Soap",
         "Sasha Skin",
-        "SKINthings (Schnitzler Concept GmbH)",
         "Unsa",
     ],
 )
@@ -328,6 +327,40 @@ def test_french_legal_prefixes_are_stripped(raw, expected):
 )
 def test_name_exceptions_keep_their_legal_form(name, exceptions, expected):
     assert clean_business_name(name, exceptions) == expected
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("Xotic Naturals (Younez International)", "Xotic Naturals"),
+        ("SKINthings (Schnitzler Concept GmbH)", "SKINthings"),
+        ("Acme [Formerly Beta]", "Acme"),
+        ("Acme (UK) Soap", "Acme Soap"),
+        ("(Paris) Acme", "Acme"),
+        ("Acme (a) (b)", "Acme"),
+        ("Acme (outer (inner))", "Acme"),
+        ("Acme - (Beta)", "Acme"),
+        ("Acme Ltd (UK)", "Acme"),
+        ("ACME BEAUTY (FRANCE)", "Acme Beauty"),
+        ("Acme® (Beta)", "Acme"),
+        ("Acme (unclosed", "Acme (unclosed"),
+        ("(Only Brackets)", "(Only Brackets)"),
+        ("Sun {Skin|Care}", "Sun {Skin|Care}"),
+    ],
+)
+def test_bracketed_text_is_stripped(raw, expected):
+    assert clean_business_name(raw) == expected
+
+
+def test_name_exceptions_keep_bracketed_text():
+    name = "Xotic Naturals (Younez International)"
+    assert clean_business_name(name, [name]) == name
+
+
+def test_render_strips_bracketed_text():
+    email = rendered(make_lead(business_name="Xotic Naturals (Younez International)"))
+    assert "Hi Xotic Naturals team," in email.body
+    assert email.subject.endswith("for Xotic Naturals")
 
 
 def test_render_uses_name_exceptions_from_settings():

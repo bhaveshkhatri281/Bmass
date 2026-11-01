@@ -39,6 +39,7 @@ LANGUAGE_CODE_RE = re.compile(r"^[a-z]{2,5}$")
 _EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍⃣]")
 _NAME_SYMBOL_RE = re.compile("[®™©\"“”„«»]")
 _POSSESSIVE_RE = re.compile(r"(?<=[^\W\d_])['’]S\b")
+_BRACKETED_RE = re.compile(r"\([^()\[\]]*\)|\[[^()\[\]]*\]")
 
 LEGAL_SUFFIXES = (
     "SASU", "SAS", "SARL", "EURL", "SA", "SCI", "SNC",
@@ -96,20 +97,32 @@ def _strip_legal_suffix(name: str) -> str:
         text = stripped
 
 
+def _strip_bracketed(name: str) -> str:
+    """Remove (...) and [...] text, inner pairs first. A name that is only brackets stays as is."""
+    text = name
+    while True:
+        stripped = " ".join(_BRACKETED_RE.sub(" ", text).split())
+        if stripped == text:
+            return text
+        if not stripped:
+            return name
+        text = stripped
+
+
 def _name_key(name: str) -> str:
     """Normalize a name for exception matching, so case and a final dot do not matter."""
     return " ".join(name.split()).rstrip(". ").casefold()
 
 
 def clean_business_name(name: Optional[str], keep_suffix: Sequence[str] = ()) -> str:
-    """Strip symbols, emojis, quotes and legal forms, collapse spaces, and Title Case long all-caps names.
+    """Strip symbols, emojis, quotes, brackets and legal forms, collapse spaces, and Title Case long all-caps names.
 
-    Names listed in keep_suffix keep their legal form.
+    Names listed in keep_suffix keep their bracketed text and legal form.
     """
     text = _NAME_SYMBOL_RE.sub("", _EMOJI_RE.sub("", name or ""))
     text = " ".join(text.split()).strip("'‘’` ").strip()
     if _name_key(text) not in {_name_key(exception) for exception in keep_suffix}:
-        text = _strip_legal_suffix(_LEGAL_PREFIX_RE.sub("", text))
+        text = _strip_legal_suffix(_LEGAL_PREFIX_RE.sub("", _strip_bracketed(text)))
     if len(text) > 4 and text.isupper():
         text = _POSSESSIVE_RE.sub(lambda m: m.group().lower(), text.title())
     return text
