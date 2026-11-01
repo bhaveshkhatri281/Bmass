@@ -198,6 +198,60 @@ def sent_last_24h(
         return _count(c)
 
 
+def is_us_lead(lead: Dict[str, Any] | sqlite3.Row) -> bool:
+    """Return True for a lead in the United States."""
+    return str(lead["country"] or "").strip().lower() in US_COUNTRY_NAMES
+
+
+def reservation_is_open(now_utc: datetime.datetime, settings: Settings) -> bool:
+    """Check if it is between the app window start and the US reservation end, in IST."""
+    reservation = settings.worker.us_reservation
+    if reservation.percent <= 0:
+        return False
+    now_ist = now_utc.astimezone(IST).time()
+    start = datetime.time.fromisoformat(settings.worker.app_window_ist.start)
+    until = datetime.time.fromisoformat(reservation.until_ist)
+    if start <= until:
+        return start <= now_ist < until
+    return now_ist >= start or now_ist < until
+
+
+def has_queued_us_leads(conn: sqlite3.Connection, test_leads_only: bool = False) -> bool:
+    """Return True if any US lead is waiting for its first email."""
+    placeholders = ", ".join("?" for _ in US_COUNTRY_NAMES)
+    test_filter = " AND is_test = 1" if test_leads_only else ""
+    row = conn.execute(
+        f"""SELECT 1 FROM leads
+            WHERE status = 'queued' AND lower(trim(country)) IN ({placeholders}){test_filter} LIMIT 1""",
+        US_COUNTRY_NAMES,
+    ).fetchone()
+    return row is not None
+
+
+def non_us_allowance(cap: int, percent: int) -> int:
+    """Return how much of a cap non-US leads may use while the reservation is open."""
+    return cap - math.ceil(cap * percent / 100)
+
+
+def non_us_sent_last_24h(
+    inbox_id: int,
+    conn: sqlite3.Connection,
+    include_dry_run: bool = False,
+    now_utc: Optional[datetime.datetime] = None,
+) -> int:
+    """Count an inbox's sends to non-US leads in the rolling last 24h."""
+    now = now_utc or datetime.datetime.now(datetime.timezone.utc)
+    results = "('sent', 'dry_run')" if include_dry_run else "('sent')"
+    placeholders = ", ".join("?" for _ in US_COUNTRY_NAMES)
+    row = conn.execute(
+        f"""SELECT COUNT(*) FROM send_log s JOIN leads l ON l.id = s.lead_id
+            WHERE s.inbox_id = ? AND s.result IN {results} AND s.ts >= ?
+              AND lower(trim(l.country)) NOT IN ({placeholders})""",
+        (inbox_id, to_iso(now - datetime.timedelta(hours=24)), *US_COUNTRY_NAMES),
+    ).fetchone()
+    return int(row[0])
+
+
 def queued_leads(conn: sqlite3.Connection) -> Iterable[sqlite3.Row]:
     """Yield new leads in queue order: country order, priority, Good before Weak, then id."""
     return conn.execute(

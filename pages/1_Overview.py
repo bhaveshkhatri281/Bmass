@@ -7,8 +7,18 @@ import sys
 import streamlit as st
 
 from mailer.config import PROJECT_ROOT, Settings
-from mailer.db import get_app_state, set_app_state, to_iso
-from mailer.scheduling import IST, in_app_window, sent_last_24h, thin_window_leads, todays_cap
+from mailer.db import get_app_state, to_iso
+from mailer.detection import LAST_RUN_KEY, run_all_inboxes
+from mailer.safety import evaluate_all_inboxes, is_paused_all, set_paused_all
+from mailer.scheduling import (
+    IST,
+    has_queued_us_leads,
+    in_app_window,
+    reservation_is_open,
+    sent_last_24h,
+    thin_window_leads,
+    todays_cap,
+)
 from mailer.ui import setup_page
 
 conn, settings = setup_page("Overview")
@@ -22,7 +32,7 @@ def load_thin_windows(_conn, _settings: Settings, cache_key: str) -> dict[str, i
 # Top controls: Start Worker, Pause All/Resume All, Run Detection Now
 col_c1, col_c2, col_c3 = st.columns(3)
 
-paused_all = get_app_state("paused_all", "0", conn) == "1"
+paused_all = is_paused_all(conn)
 
 with col_c1:
     if st.button("🚀 Start Worker Now", width="stretch"):
@@ -49,19 +59,30 @@ with col_c1:
 with col_c2:
     if paused_all:
         if st.button("▶️ Resume All Sending", type="primary", width="stretch"):
-            set_app_state("paused_all", "0", conn)
+            set_paused_all(False, conn)
             st.rerun()
     else:
         if st.button("⏸️ Pause All Sending", type="secondary", width="stretch"):
-            set_app_state("paused_all", "1", conn)
+            set_paused_all(True, conn)
             st.rerun()
 
 with col_c3:
     if st.button("🔍 Run Detection Now", width="stretch"):
-        st.info("Detection will run in Milestone 6.")
+        with st.spinner("Checking inboxes..."):
+            totals = run_all_inboxes(settings, conn=conn)
+            paused_inboxes = evaluate_all_inboxes(settings, conn)
+        found = ", ".join(f"{event_type}: {count}" for event_type, count in sorted(totals.items())) or "nothing new"
+        st.success(f"Detection finished: {found}.")
+        for paused_inbox in paused_inboxes:
+            st.error(f"{paused_inbox} was paused for too many bounces.")
+    st.caption(f"Last detection: {get_app_state(LAST_RUN_KEY, 'never', conn)}")
 
 if paused_all:
     st.error("⏸️ **GLOBAL PAUSE IS ON** — Worker will not dispatch any emails while paused.")
+
+reservation = settings.worker.us_reservation
+if reservation_is_open(datetime.datetime.now(datetime.timezone.utc), settings) and has_queued_us_leads(conn):
+    st.info(f"🇺🇸 {reservation.percent}% of each inbox's cap is held for US leads until {reservation.until_ist} IST.")
 
 windows = settings.worker
 window_key = f"{windows.app_window_ist}{windows.recipient_window}"

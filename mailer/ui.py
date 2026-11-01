@@ -28,8 +28,10 @@ def render_top_banners(conn: sqlite3.Connection, settings: Settings) -> None:
     # 1. Mode banner
     if settings.mode.dry_run:
         st.warning("⚠️ **DRY RUN MODE ACTIVE** — Sends are simulated and logged. No actual emails will be dispatched.")
+    elif settings.mode.test_leads_only:
+        st.success("🟢 **LIVE MODE ACTIVE, TEST LEADS ONLY** — Real emails go only to test leads. Your real lead list is locked.")
     else:
-        st.success("🟢 **LIVE MODE ACTIVE** — Real emails will be dispatched from connected inboxes.")
+        st.error("🔴 **LIVE MODE ACTIVE, REAL LEADS** — Real emails go to real leads from connected inboxes.")
 
     # 2. Paused inboxes banner
     paused_rows = conn.execute(

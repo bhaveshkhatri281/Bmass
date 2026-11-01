@@ -9,6 +9,7 @@ from mailer.importer import (
     QUALITY_SHEETS,
     ImportFileError,
     import_rows,
+    import_test_addresses,
     list_sheets,
     read_table,
 )
@@ -81,6 +82,11 @@ if uploaded is not None:
                 help="This file has no quality column. Good is sent before Weak.",
             )
 
+        is_test = st.checkbox(
+            "These are test leads (my own addresses)",
+            help="While the test leads lock is on, LIVE mode can only email leads marked as test leads.",
+        )
+
         if st.button("📥 Import", type="primary"):
             try:
                 st.session_state["import_result"] = import_rows(
@@ -91,9 +97,19 @@ if uploaded is not None:
                     settings.import_.skip_quality,
                     default_quality,
                     conn,
+                    is_test,
                 )
             except ImportFileError as e:
                 st.error(str(e))
+
+with st.expander("🧪 Add test leads (my own addresses)"):
+    st.write("Paste one address per line. These are the only leads LIVE mode can email while the test leads lock is on.")
+    country_names = [row["country"] for row in conn.execute("SELECT country FROM country_settings WHERE skip = 0 ORDER BY sort_order")]
+    with st.form("test_leads_form", clear_on_submit=True):
+        test_addresses = st.text_area("Addresses", height=120)
+        test_country = st.selectbox("Country", country_names, index=country_names.index("United Kingdom"))
+        if st.form_submit_button("➕ Add test leads"):
+            st.session_state["import_result"] = import_test_addresses(test_addresses, test_country, conn)
 
 result = st.session_state.get("import_result")
 if result is not None:

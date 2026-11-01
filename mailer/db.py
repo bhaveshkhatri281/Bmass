@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS leads (
   next_due_at      TEXT,
   import_id        INTEGER REFERENCES imports(id),
   created_at       TEXT NOT NULL,
-  updated_at       TEXT NOT NULL
+  updated_at       TEXT NOT NULL,
+  is_test          INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status, next_due_at);
 CREATE INDEX IF NOT EXISTS idx_leads_thread ON leads(thread_id);
@@ -200,6 +201,10 @@ def init_db(db_path: Path | str | None = None) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     with open_conn(target_path) as conn:
         conn.executescript(SCHEMA_SQL)
+        # Databases created before test leads existed need the new column.
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(leads)")}
+        if "is_test" not in columns:
+            conn.execute("ALTER TABLE leads ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0")
         conn.commit()
 
 
@@ -324,3 +329,139 @@ def add_suppression(email: str, reason: str, conn: Optional[sqlite3.Connection] 
         with open_conn() as c:
             _run(c)
 
+
+
+# ==============================================================================
+# Lead actions
+# ==============================================================================
+
+def set_lead_status(lead_id: int, status: str, conn: sqlite3.Connection) -> None:
+    """Change a lead's status."""
+    with transaction(conn):
+        conn.execute("UPDATE leads SET status = ?, updated_at = ? WHERE id = ?", (status, utc_now_iso(), lead_id))
+
+
+def suppress_lead(lead_id: int, conn: sqlite3.Connection) -> None:
+    """Add a lead to the permanent suppression list by hand and stop its sequence."""
+    lead = conn.execute("SELECT email FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    add_suppression(lead["email"], "manual", conn)
+    set_lead_status(lead_id, "skipped", conn)
+
+
+def reset_lead(lead_id: int, conn: sqlite3.Connection) -> Optional[str]:
+    """Put a lead back in the queue. Returns an error message if it was ever really sent or is suppressed."""
+    lead = conn.execute("SELECT email, step FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    was_sent = conn.execute("SELECT 1 FROM send_log WHERE lead_id = ? AND result = 'sent'", (lead_id,)).fetchone()
+    if lead["step"] > 0 or was_sent:
+        return "This lead was already emailed, so it cannot go back in the queue."
+    if is_suppressed(lead["email"], conn):
+        return "This lead is on the suppression list."
+    set_lead_status(lead_id, "queued", conn)
+    return None
+
+
+def set_custom_line(lead_id: int, custom_line: str, conn: sqlite3.Connection) -> None:
+    """Save a lead's personal first line."""
+    with transaction(conn):
+        conn.execute(
+            "UPDATE leads SET custom_line = ?, updated_at = ? WHERE id = ?",
+            (custom_line.strip(), utc_now_iso(), lead_id),
+        )
+
+
+def remove_test_leads(conn: sqlite3.Connection) -> int:
+    """Delete test leads with their log rows, events and suppression entries. Real leads are untouched."""
+    emails = [row["email"] for row in conn.execute("SELECT email FROM leads WHERE is_test = 1")]
+    with transaction(conn):
+        conn.execute("DELETE FROM send_log WHERE lead_id IN (SELECT id FROM leads WHERE is_test = 1)")
+        conn.execute("DELETE FROM events WHERE lead_id IN (SELECT id FROM leads WHERE is_test = 1)")
+        conn.executemany("DELETE FROM suppression WHERE lower(email) = lower(?)", [(email,) for email in emails])
+        conn.execute("DELETE FROM leads WHERE is_test = 1")
+    return len(emails)
+
+
+def finish_completed_leads(now_iso: str, conn: sqlite3.Connection) -> int:
+    """Mark leads finished once the last step was sent and its waiting period has passed."""
+    with transaction(conn):
+        cursor = conn.execute(
+            """UPDATE leads SET status = 'finished', updated_at = ?
+               WHERE status = 'in_sequence' AND next_due_at <= ?
+                 AND step >= (SELECT COALESCE(MAX(step_no), 0) FROM steps WHERE active = 1)""",
+            (now_iso, now_iso),
+        )
+    return cursor.rowcount
+
+
+def set_events_handled(handled_by_id: Dict[int, bool], conn: sqlite3.Connection) -> None:
+    """Store the handled tick for each event."""
+    with transaction(conn):
+        conn.executemany(
+            "UPDATE events SET handled = ? WHERE id = ?",
+            [(1 if handled else 0, event_id) for event_id, handled in handled_by_id.items()],
+        )
+
+
+# ==============================================================================
+# Page queries
+# ==============================================================================
+
+def _lead_where(filters: Dict[str, Any]) -> Tuple[str, List[Any]]:
+    clauses: List[str] = []
+    params: List[Any] = []
+    for column in ("status", "country", "quality", "inbox_id", "step"):
+        if filters.get(column) not in (None, ""):
+            clauses.append(f"{column} = ?")
+            params.append(filters[column])
+    if filters.get("is_test"):
+        clauses.append("is_test = 1")
+    if filters.get("search"):
+        clauses.append("(email LIKE ? OR business_name LIKE ?)")
+        params += [f"%{filters['search']}%"] * 2
+    return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+
+def list_leads(
+    filters: Dict[str, Any],
+    limit: int,
+    offset: int,
+    conn: sqlite3.Connection,
+) -> Tuple[List[sqlite3.Row], int]:
+    """Return one page of leads and the total matching count."""
+    where, params = _lead_where(filters)
+    total = conn.execute(f"SELECT COUNT(*) FROM leads{where}", params).fetchone()[0]
+    rows = conn.execute(f"SELECT * FROM leads{where} ORDER BY id LIMIT ? OFFSET ?", [*params, limit, offset]).fetchall()
+    return rows, int(total)
+
+
+def _log_where(filters: Dict[str, Any]) -> Tuple[str, List[Any]]:
+    clauses: List[str] = []
+    params: List[Any] = []
+    for key, clause in (
+        ("inbox_id", "s.inbox_id = ?"),
+        ("result", "s.result = ?"),
+        ("date_from", "s.ts >= ?"),
+        ("date_to", "s.ts < ?"),
+    ):
+        if filters.get(key) not in (None, ""):
+            clauses.append(clause)
+            params.append(filters[key])
+    return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+
+def list_send_log(
+    filters: Dict[str, Any],
+    limit: Optional[int],
+    offset: int,
+    conn: sqlite3.Connection,
+) -> Tuple[List[sqlite3.Row], int]:
+    """Return one page of the send log, newest first, and the total matching count. limit=None returns all."""
+    where, params = _log_where(filters)
+    total = conn.execute(f"SELECT COUNT(*) FROM send_log s{where}", params).fetchone()[0]
+    query = f"""SELECT s.id, s.ts, i.email AS inbox, s.lead_email, s.step_no, s.subject, s.result, s.error_text,
+                       s.gmail_message_id, s.thread_id
+                FROM send_log s LEFT JOIN inboxes i ON i.id = s.inbox_id{where}
+                ORDER BY s.id DESC"""
+    if limit is not None:
+        query += " LIMIT ? OFFSET ?"
+        params = [*params, limit, offset]
+    return conn.execute(query, params).fetchall(), int(total)

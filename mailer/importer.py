@@ -41,6 +41,11 @@ DEFAULT_PRIORITY = 5
 DEFAULT_LANGUAGE = "en"
 BLANK_COUNTRY = "(blank)"
 
+TEST_LEAD_NAME = "Test Lead"
+TEST_LEAD_CATEGORY = "skincare"
+TEST_LEAD_FILENAME = "Test leads (pasted)"
+TEST_LEAD_QUALITY = "Test"
+
 
 class ImportFileError(ValueError):
     """Raised when a file cannot be read or mapped."""
@@ -114,13 +119,14 @@ def import_rows(
     skip_quality: Sequence[str],
     default_quality: str = "",
     conn: Optional[sqlite3.Connection] = None,
+    is_test: bool = False,
 ) -> ImportResult:
     """Clean, filter and insert rows in one transaction, and record the import."""
     if not mapping.get("email"):
         raise ImportFileError("The email column must be mapped.")
     if conn is None:
         with open_conn() as c:
-            return import_rows(df, mapping, filename, sheet, skip_quality, default_quality, c)
+            return import_rows(df, mapping, filename, sheet, skip_quality, default_quality, c, is_test)
 
     columns = {lead_field: _column(df, mapping, lead_field) for lead_field in DEFAULT_COLUMN_MAP}
 
@@ -192,10 +198,23 @@ def import_rows(
         import_id = int(cursor.lastrowid)
         conn.executemany(
             f"""INSERT INTO leads (email, business_name, category, country, location, website, instagram, email_type,
-                                   priority, quality, language, created_at, updated_at, import_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {import_id})""",
+                                   priority, quality, language, created_at, updated_at, import_id, is_test)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {import_id}, {1 if is_test else 0})""",
             rows,
         )
 
     logger.info("Imported %d leads from %s (%s), skipped %s", len(rows), filename, sheet, skipped)
     return ImportResult(import_id=import_id, imported=len(rows), skipped=skipped, unknown_countries=unknown_countries)
+
+
+def import_test_addresses(addresses: str, country: str, conn: sqlite3.Connection) -> ImportResult:
+    """Add pasted addresses, one per line, as test leads. Only test leads can be emailed while the lock is on."""
+    emails = [line.strip() for line in addresses.splitlines() if line.strip()]
+    df = pd.DataFrame({
+        "email": emails,
+        "business_name": [TEST_LEAD_NAME] * len(emails),
+        "category": [TEST_LEAD_CATEGORY] * len(emails),
+        "country": [country] * len(emails),
+    }, dtype=str)
+    mapping = {column: column for column in df.columns}
+    return import_rows(df, mapping, TEST_LEAD_FILENAME, None, [], TEST_LEAD_QUALITY, conn, is_test=True)

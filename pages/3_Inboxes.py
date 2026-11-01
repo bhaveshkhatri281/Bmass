@@ -7,6 +7,7 @@ import streamlit as st
 
 from mailer.db import utc_now_iso
 from mailer.gmail_client import connect_inbox, has_token, send_message
+from mailer.safety import resume_inbox
 from mailer.scheduling import get_ramp_schedule, sent_last_24h, todays_cap
 from mailer.ui import setup_page
 
@@ -84,8 +85,7 @@ else:
                         st.rerun()
                 else:
                     if st.button("▶️ Resume Inbox", key=f"resume_{ib_id}", width="stretch"):
-                        conn.execute("UPDATE inboxes SET paused_reason = NULL, paused_until = NULL WHERE id = ?", (ib_id,))
-                        conn.commit()
+                        resume_inbox(ib_id, conn)
                         st.rerun()
 
             with col_btn3:

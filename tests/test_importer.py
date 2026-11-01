@@ -12,6 +12,7 @@ from mailer.importer import (
     DEFAULT_COLUMN_MAP,
     ImportFileError,
     import_rows,
+    import_test_addresses,
     list_sheets,
     read_table,
 )
@@ -204,6 +205,41 @@ def test_failed_import_leaves_nothing_behind(monkeypatch):
             import_rows(pd.DataFrame([row("b@acme.com")]), DEFAULT_COLUMN_MAP, "x.xlsx", None, ["Bad"], "", FailingConn(conn))
         assert conn.execute("SELECT COUNT(*) FROM imports").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 1
+
+
+def test_normal_import_is_not_a_test_lead():
+    run_import([row("a@acme.com")])
+
+    assert leads()["a@acme.com"]["is_test"] == 0
+
+
+def test_import_can_mark_test_leads():
+    import_rows(pd.DataFrame([row("a@acme.com")]), DEFAULT_COLUMN_MAP, "t.csv", None, ["Bad"], "", None, True)
+
+    assert leads()["a@acme.com"]["is_test"] == 1
+
+
+def test_pasted_test_addresses_become_test_leads():
+    with open_conn() as conn:
+        result = import_test_addresses(" Me+A@Example.com \n\nme+b@example.com\nnot-an-email\n", "United Kingdom", conn)
+
+    assert result.imported == 2
+    assert result.skipped == {"invalid email": 1}
+    lead = leads()["me+a@example.com"]
+    assert lead["is_test"] == 1
+    assert lead["quality"] == "Test"
+    assert lead["language"] == "en"
+    assert lead["business_name"] == "Test Lead"
+
+
+def test_pasted_address_already_in_the_real_list_is_not_turned_into_a_test_lead():
+    run_import([row("real@acme.com")])
+
+    with open_conn() as conn:
+        result = import_test_addresses("real@acme.com", "United Kingdom", conn)
+
+    assert result.imported == 0
+    assert leads()["real@acme.com"]["is_test"] == 0
 
 
 def excel_bytes(sheets):

@@ -66,6 +66,7 @@ class FakeGmailClient:
         self.send_failures: List[Dict[str, Any]] = []  # [{error, delivered}], used by api_send in order
         self.sent_queries: List[str] = []
         self.search_error: Optional[Exception] = None
+        self.list_queries: Dict[str, str] = {}  # email -> last detection query
 
     def connect_inbox(self, email_addr: str) -> str:
         if self.should_raise:
@@ -123,6 +124,7 @@ class FakeGmailClient:
         if self.should_raise:
             raise self.should_raise
         clean = email_addr.strip().lower()
+        self.list_queries[clean] = query
         return self.inbox_messages.get(clean, [])
 
     def get_message_text(self, email_addr: str, msg_id: str) -> str:

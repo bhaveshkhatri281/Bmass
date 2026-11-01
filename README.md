@@ -25,6 +25,20 @@ To run a single test tick:
 python worker.py --once
 ```
 
+### Daily Routine
+1. The scheduled task starts the worker at 18:00 IST. It sends between 18:00 and 00:30 IST, during each lead's own working hours.
+2. Open **Overview** to check inboxes, caps and any red banner.
+3. Open **Replies** to read replies and tick them as handled. Click **Open in Gmail** to answer.
+4. Open **Log** to see what was sent and to export to Excel.
+
+### Safety Switches
+- **Dry run** (Campaign page): on by default. The worker only logs what it would send.
+- **Test leads lock** (Campaign page): on by default. In LIVE mode, only test leads can be emailed, whatever is in the queue. Unlocking real leads asks you to type a confirmation.
+- **Pause All Sending** (Overview page): stops sending at once. Replies and opt-outs are still detected.
+
+### Test Leads
+Add your own addresses under **Import > Add test leads**, or tick **These are test leads** when uploading a file. Addresses already in your real list are skipped, so a real lead can never become a test lead. **Leads > Remove all test leads** deletes them with their log rows and suppression entries, so you can test again. Real leads are never touched.
+
 ---
 
 ## 2. One-Time Google Cloud OAuth Setup
@@ -69,6 +83,9 @@ To enable Gmail sending and reply detection, set up Google Cloud OAuth:
   - Under **When plugged in, PC goes to sleep after**, set to **Never**.
 - **Automated Scheduling**:
   - Run `scripts\register_task.ps1` in PowerShell to automatically register the Windows Scheduled Task to run daily at 18:00 IST.
+  - The task runs only while you are logged in, and no password is stored. If the PC was off at 18:00, it starts as soon as possible afterwards.
+  - To check it, open **Task Scheduler** and look for **Mobisa Mailer Worker**. Right-click it and choose **Run** to start it by hand.
+  - If PowerShell blocks the script, run this once instead: `powershell -ExecutionPolicy Bypass -File scripts\register_task.ps1`
 
 ---
 
@@ -93,9 +110,15 @@ To enable Gmail sending and reply detection, set up Google Cloud OAuth:
 - **Dry run**: `dry_run` rows count toward caps, use the random delay between sends, and skip that lead and step for 24 hours. Leads themselves stay unchanged. In LIVE mode, old `dry_run` rows do not count toward caps.
 - **Worker**: Settings are read again on every loop, so dashboard changes apply within seconds. If `settings.yaml` cannot be read, the last good settings stay in use. `--once` takes the same lock as `--run`.
 - **Country skip**: A country marked `skip` stops new sends and follow-ups for leads already imported. Language changes apply to future imports only.
-- **Going LIVE**: Blocked while the business address, portfolio link, website or unsubscribe address is empty.
+- **Going LIVE**: Blocked while the business address, portfolio link, website or unsubscribe address is empty. The worker checks this too, so editing `settings.yaml` by hand cannot skip it.
+- **Test leads lock**: Added on top of the spec as `mode.test_leads_only`, on by default, with a new `leads.is_test` column. Existing databases gain the column on the next start.
+- **US reservation**: Added on top of the spec as `worker.us_reservation`. From the start of the app window until `until_ist`, new non-US leads may use only the part of each inbox's cap that is not reserved. The reserved part is rounded up, so 50% of 15 holds back 8. After `until_ist`, any country can use it. With no US lead queued, nothing is held back. Follow-ups are never held back, but they count toward the cap.
+- **Detection during a pause**: Detection keeps running during a global pause, unlike the spec's loop, so opt-outs are never missed.
+- **Failed sends**: A transient error waits for the normal gap and retries. Any other Gmail error pauses the inbox for 1 hour, because more sends would fail too and would burn through leads.
+- **Bounce pause**: Resuming an inbox forgives earlier bounces, otherwise it would pause again at once.
+- **Bounces from unknown addresses**: Logged, with nothing suppressed.
 - **US states**: The state is the last part of the location before the country. Washington DC and places like Washingtonville, New York use Eastern time.
-- **Opt-out detection**: uses the message body only, never the subject or snippet. Quoted text is stripped first: lines starting with `>`, and everything after `On ... wrote:`, `Le ... a écrit :` or `-----Original Message-----`. Whole-word match on `stop`, `unsubscribe`, `remove me`, `opt out`, `désabonner`, `désinscrire`, `ne plus recevoir`. Bare `remove` is not an opt-out. If unsure, it is a normal reply.
+- **Opt-out detection**: uses the message body only, never the subject or snippet. Quoted text is stripped first: lines starting with `>`, and everything after `On ... wrote:`, `Le ... a écrit :`, `-----Original Message-----`, or an Outlook `From:` / `De :` header block. Lines repeating our own footer are ignored too. Whole-word match on `stop`, `unsubscribe`, `remove me`, `opt out`, `désabonner`, `désinscrire`, `ne plus recevoir`. Bare `remove` is not an opt-out. If unsure, it is a normal reply.
 - **Send windows**: the rules stay as specified, so Australia never overlaps the app window and Hawaii barely does. The Overview page warns about this.
 - **Dry-run safety**: only an explicit `dry_run: false` goes live. A blank or unreadable value stays in dry run.
 - **Permanent send errors**: only a rejected recipient address suppresses a lead. Other 400/404 errors are logged and the lead stays as it is.

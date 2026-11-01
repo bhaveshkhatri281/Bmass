@@ -32,6 +32,45 @@ def test_unsubscribe_inbox_round_trip(tmp_path):
     assert load_settings(path).sender.unsubscribe_inbox == "beedu@mobisa.in"
 
 
+@pytest.mark.parametrize(
+    "text",
+    ["", "mode:\n  test_leads_only:\n", 'mode:\n  test_leads_only: "false"\n', "mode:\n  test_leads_only: true\n"],
+)
+def test_test_leads_lock_stays_on_unless_explicitly_false(tmp_path, text):
+    assert load_from(tmp_path, text).mode.test_leads_only is True
+
+
+def test_test_leads_lock_can_be_turned_off_and_saved(tmp_path):
+    settings = load_from(tmp_path, "mode:\n  test_leads_only: false\n")
+    assert settings.mode.test_leads_only is False
+
+    path = tmp_path / "out.yaml"
+    save_settings(settings, path)
+    assert load_settings(path).mode.test_leads_only is False
+
+
+def test_real_settings_file_keeps_real_leads_locked():
+    assert load_settings().mode.test_leads_only is True
+
+
+def test_us_reservation_defaults_and_round_trip(tmp_path):
+    settings = load_from(tmp_path, "")
+    assert (settings.worker.us_reservation.percent, settings.worker.us_reservation.until_ist) == (50, "22:30")
+
+    settings.worker.us_reservation.percent = 30
+    settings.worker.us_reservation.until_ist = "21:00"
+    path = tmp_path / "out.yaml"
+    save_settings(settings, path)
+    saved = load_settings(path).worker.us_reservation
+    assert (saved.percent, saved.until_ist) == (30, "21:00")
+
+
+@pytest.mark.parametrize("text", ["percent: 101", "percent: -1", 'until_ist: "25:00"'])
+def test_bad_us_reservation_is_rejected(tmp_path, text):
+    with pytest.raises(ConfigError):
+        load_from(tmp_path, f"worker:\n  us_reservation: {{ {text} }}\n")
+
+
 def test_name_exceptions_default_and_round_trip(tmp_path):
     assert load_from(tmp_path, "").names.keep_suffix == ["Nails Inc."]
 

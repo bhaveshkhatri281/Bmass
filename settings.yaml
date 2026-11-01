@@ -10,6 +10,7 @@ sender:
 
 mode:
   dry_run: true             # default ON. Sends nothing, only logs.
+  test_leads_only: true     # default ON. LIVE mode can only email leads imported as test leads.
 
 worker:
   app_window_ist: { start: "18:00", end: "00:30" }   # worker only sends inside this local (IST) window
@@ -18,6 +19,7 @@ worker:
   detection_every_minutes: 10
   idle_sleep_seconds: 5
   hard_daily_cap: 150       # absolute max per inbox per rolling 24h, overrides any ramp/max setting
+  us_reservation: { percent: 50, until_ist: "22:30" }  # share of each cap kept for US leads until this IST time
 
 safety:
   bounce_pause_threshold: 3   # bounces ...

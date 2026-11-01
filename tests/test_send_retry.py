@@ -151,5 +151,46 @@ def test_double_quotes_in_subject_cannot_break_the_search(fake):
     assert fake.sent_queries == [f'in:sent to:{LEAD} subject:"idea for  Acme  Ltd" newer_than:1h']
 
 
+def test_whole_sequence_through_the_real_client_stays_in_one_thread(fake, monkeypatch):
+    import datetime
+
+    from mailer import engine
+    from mailer.config import Settings
+    from mailer.db import open_conn
+
+    monkeypatch.setattr(gmail_client, "has_token", lambda email_addr: True)
+    settings = Settings()
+    settings.mode.dry_run = False
+    settings.sender.business_address = "Jaipur"
+    settings.sender.website = "mobisa.in"
+    settings.sender.portfolio_link = "https://mobisa.in"
+
+    with open_conn() as conn:
+        conn.execute("UPDATE steps SET delay_days = 0")
+        conn.execute(
+            "INSERT INTO inboxes (email, display_name, ramp_start_date, created_at) VALUES (?, 'Beedu', '2026-11-04', 'x')",
+            (INBOX,),
+        )
+        conn.execute(
+            """INSERT INTO leads (email, business_name, category, country, language, is_test, created_at, updated_at)
+               VALUES (?, 'Acme', 'skincare', 'United Kingdom', 'en', 1, 'x', 'x')""",
+            (LEAD,),
+        )
+
+    moment = datetime.datetime(2026, 11, 4, 15, 0, tzinfo=datetime.timezone.utc)
+    for minute in range(3):
+        with open_conn() as conn:
+            conn.execute("UPDATE inboxes SET next_send_after = NULL")
+            sent = engine.tick(settings, gmail_client, moment + datetime.timedelta(minutes=minute), conn)
+        assert sent is True
+
+    first, second, third = fake.sent_messages
+    assert first["in_reply_to"] == ""
+    assert second["in_reply_to"] == first["rfc_message_id"]
+    assert third["in_reply_to"] == second["rfc_message_id"]
+    assert first["thread_id"] == second["thread_id"] == third["thread_id"]
+    assert second["subject"] == third["subject"] == f"Re: {first['subject']}"
+
+
 def test_encoded_subject_header_matches_plain_subject():
     assert _normalize_header("=?utf-8?q?une_id=C3=A9e?=") == _normalize_header("une idée")

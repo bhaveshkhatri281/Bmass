@@ -19,6 +19,8 @@ $Settings = New-ScheduledTaskSettingsSet `
     -MultipleInstances IgnoreNew `
     -DontStopIfGoingOnBatteries `
     -AllowStartIfOnBatteries
+# Runs only while this user is logged on, so no password is stored.
+$Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
 Write-Host "Registering scheduled task '$TaskName'..."
 Register-ScheduledTask `
@@ -26,8 +28,8 @@ Register-ScheduledTask `
     -Action $Action `
     -Trigger $Trigger `
     -Settings $Settings `
+    -Principal $Principal `
     -Description "Mobisa Mailer background worker for sending cold emails" `
     -Force
 
 Write-Host "Task '$TaskName' registered successfully to run daily at 18:00 IST."
-

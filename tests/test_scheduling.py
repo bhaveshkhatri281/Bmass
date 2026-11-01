@@ -7,10 +7,15 @@ import pytest
 from mailer.config import Settings
 from mailer.db import open_conn
 from mailer.scheduling import (
+    has_queued_us_leads,
     in_app_window,
     in_recipient_window,
+    is_us_lead,
+    non_us_allowance,
+    non_us_sent_last_24h,
     parse_us_state_tz,
     queued_leads,
+    reservation_is_open,
     save_country_settings,
     sent_last_24h,
     thin_window_leads,
@@ -217,6 +222,86 @@ def test_thin_window_leads_reports_only_poor_timezones():
                 (email, country, location, status, stamp, stamp),
             )
         assert thin_window_leads(Settings(), conn) == {"Australia/Sydney": 2, "Pacific/Honolulu": 1}
+
+
+def ist(hour, minute=0):
+    return datetime.datetime(2026, 11, 4, hour, minute, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+
+@pytest.mark.parametrize(
+    "moment, expected",
+    [
+        (ist(17, 59), False),
+        (ist(18, 0), True),
+        (ist(22, 29), True),
+        (ist(22, 30), False),
+        (ist(23, 59), False),
+        (ist(0, 15), False),
+    ],
+)
+def test_reservation_runs_from_app_start_to_cutoff(moment, expected):
+    assert reservation_is_open(moment, Settings()) is expected
+
+
+def test_reservation_cutoff_after_midnight():
+    cfg = Settings()
+    cfg.worker.us_reservation.until_ist = "00:15"
+
+    assert reservation_is_open(ist(23, 30), cfg) is True
+    assert reservation_is_open(ist(0, 10), cfg) is True
+    assert reservation_is_open(ist(0, 20), cfg) is False
+
+
+def test_zero_percent_is_never_open():
+    cfg = Settings()
+    cfg.worker.us_reservation.percent = 0
+
+    assert reservation_is_open(ist(19), cfg) is False
+
+
+@pytest.mark.parametrize("cap, percent, expected", [(10, 50, 5), (15, 50, 7), (1, 50, 0), (10, 0, 10), (10, 100, 0), (80, 25, 60)])
+def test_non_us_allowance(cap, percent, expected):
+    assert non_us_allowance(cap, percent) == expected
+
+
+def test_has_queued_us_leads_and_is_us_lead():
+    stamp = "x"
+    with open_conn() as conn:
+        assert has_queued_us_leads(conn) is False
+        conn.execute("INSERT INTO leads (email, country, status, created_at, updated_at) VALUES ('a@x.com', 'France', 'queued', ?, ?)", (stamp, stamp))
+        conn.execute("INSERT INTO leads (email, country, status, created_at, updated_at) VALUES ('b@x.com', 'United States', 'replied', ?, ?)", (stamp, stamp))
+        assert has_queued_us_leads(conn) is False
+
+        conn.execute("INSERT INTO leads (email, country, status, created_at, updated_at) VALUES ('c@x.com', ' USA ', 'queued', ?, ?)", (stamp, stamp))
+        assert has_queued_us_leads(conn) is True
+        assert has_queued_us_leads(conn, test_leads_only=True) is False
+
+        conn.execute("UPDATE leads SET is_test = 1 WHERE email = 'c@x.com'")
+        assert has_queued_us_leads(conn, test_leads_only=True) is True
+
+    assert is_us_lead({"country": "United States"}) is True
+    assert is_us_lead({"country": "France"}) is False
+    assert is_us_lead({"country": None}) is False
+
+
+def test_non_us_sent_counts_only_non_us_sends():
+    now = datetime.datetime(2026, 11, 4, 15, 0, tzinfo=datetime.timezone.utc)
+    with open_conn() as conn:
+        conn.execute("INSERT INTO inboxes (id, email, display_name, ramp_start_date, created_at) VALUES (1, 'a@b.c', 'A', '2026-11-01', 'x')")
+        conn.execute("INSERT INTO leads (id, email, country, created_at, updated_at) VALUES (1, 'uk@x.com', 'United Kingdom', 'x', 'x')")
+        conn.execute("INSERT INTO leads (id, email, country, created_at, updated_at) VALUES (2, 'us@x.com', 'United States', 'x', 'x')")
+        conn.executemany(
+            "INSERT INTO send_log (ts, inbox_id, lead_id, lead_email, step_no, result) VALUES (?, 1, ?, 'x', ?, ?)",
+            [
+                ("2026-11-04T14:00:00Z", 1, 2, "sent"),
+                ("2026-11-04T14:00:00Z", 2, 2, "sent"),
+                ("2026-11-04T14:00:00Z", 1, 3, "dry_run"),
+                ("2026-11-03T14:00:00Z", 1, 1, "sent"),
+            ],
+        )
+
+        assert non_us_sent_last_24h(1, conn, now_utc=now) == 1
+        assert non_us_sent_last_24h(1, conn, include_dry_run=True, now_utc=now) == 2
 
 
 def country_rows(conn):

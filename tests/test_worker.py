@@ -161,6 +161,67 @@ def test_run_loop_does_not_tick_while_paused(loop):
     assert loop.ticks == []
 
 
+def test_run_loop_survives_a_non_standard_tick_failure(loop):
+    failures = iter([RuntimeError("boom")])
+
+    def tick_result():
+        error = next(failures, None)
+        if error:
+            raise error
+        return True
+
+    loop.tick_result = staticmethod(tick_result)
+    worker.run_loop()
+    assert len(loop.ticks) == 2
+
+
+def test_detection_runs_when_due_and_only_then(loop, monkeypatch):
+    runs = []
+    monkeypatch.setattr(worker.detection, "run_all_inboxes", lambda settings, conn: runs.append(1) or {})
+
+    worker.run_loop()
+    assert runs == [1, 1]  # the fake run does not record a time, so it stays due
+
+    runs.clear()
+    set_app_state(worker.detection.LAST_RUN_KEY, to_iso(datetime.datetime.now(datetime.timezone.utc)))
+    loop.windows = [True, False]
+    worker.run_loop()
+    assert runs == []
+
+
+def test_detection_keeps_running_during_a_global_pause(loop, monkeypatch):
+    runs = []
+    monkeypatch.setattr(worker.detection, "run_all_inboxes", lambda settings, conn: runs.append(1) or {})
+    set_app_state("paused_all", "1")
+
+    worker.run_loop()
+
+    assert runs
+    assert loop.ticks == []
+
+
+def test_failed_detection_does_not_stop_sending(loop, monkeypatch):
+    def boom(settings, conn):
+        raise RuntimeError("detection down")
+
+    monkeypatch.setattr(worker.detection, "run_all_inboxes", boom)
+
+    worker.run_loop()
+
+    assert len(loop.ticks) == 2
+
+
+def test_bounces_are_evaluated_after_detection(loop, monkeypatch):
+    calls = []
+    monkeypatch.setattr(worker.detection, "run_all_inboxes", lambda settings, conn: calls.append("detect") or {})
+    monkeypatch.setattr(worker.safety, "evaluate_all_inboxes", lambda settings, conn: calls.append("safety") or [])
+    loop.windows = [True, False]
+
+    worker.run_loop()
+
+    assert calls == ["detect", "safety"]
+
+
 def test_run_loop_refuses_when_another_worker_runs(loop):
     set_lock(os.getpid())
     worker.run_loop()

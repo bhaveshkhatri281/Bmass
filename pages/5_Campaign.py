@@ -4,9 +4,10 @@ import pandas as pd
 import streamlit as st
 
 from mailer.config import ConfigError, live_blockers, save_settings
-from mailer.engine import LIVE_SENDING_READY
 from mailer.scheduling import save_country_settings
 from mailer.ui import setup_page
+
+REAL_LEADS_PHRASE = "EMAIL REAL LEADS"
 
 conn, settings = setup_page("Campaign Settings")
 
@@ -23,13 +24,29 @@ def save_and_report(message: str) -> None:
 
 @st.dialog("Switch to LIVE?")
 def confirm_live() -> None:
-    st.write("The worker will send **real emails** to real leads. This cannot be undone once they are sent.")
+    if settings.mode.test_leads_only:
+        st.write("The worker will send **real emails to test leads only**. Your real lead list stays locked.")
+    else:
+        st.write("The worker will send **real emails to real leads**. This cannot be undone once they are sent.")
     col_yes, col_no = st.columns(2)
     if col_yes.button("Yes, go LIVE", type="primary", width="stretch"):
         settings.mode.dry_run = False
         save_settings(settings)
         st.rerun()
     if col_no.button("Cancel", width="stretch"):
+        st.rerun()
+
+
+@st.dialog("Unlock real leads?")
+def confirm_real_leads() -> None:
+    st.write("With this lock off, LIVE mode emails your **real lead list**.")
+    typed = st.text_input(f"Type {REAL_LEADS_PHRASE} to confirm")
+    col_yes, col_no = st.columns(2)
+    if col_yes.button("Unlock", type="primary", width="stretch", disabled=typed != REAL_LEADS_PHRASE):
+        settings.mode.test_leads_only = False
+        save_settings(settings)
+        st.rerun()
+    if col_no.button("Keep locked", width="stretch"):
         st.rerun()
 
 
@@ -48,8 +65,15 @@ else:
         settings.mode.dry_run = True
         save_and_report("Back in dry run.")
 
-if not LIVE_SENDING_READY:
-    st.info("Live sending is not built yet (Milestone 5). The worker sends nothing in LIVE mode until then.")
+if settings.mode.test_leads_only:
+    st.write("🔒 **Test leads lock is ON.** LIVE mode can only email test leads. Your real lead list cannot be reached.")
+    if st.button("Unlock real leads"):
+        confirm_real_leads()
+else:
+    st.write("🔓 **Test leads lock is OFF.** LIVE mode emails your real lead list.")
+    if st.button("Lock to test leads", type="primary"):
+        settings.mode.test_leads_only = True
+        save_and_report("Test leads lock is on.")
 
 st.markdown("### ⚙️ Sender")
 with st.form("sender_form"):
@@ -89,7 +113,13 @@ with st.form("worker_form"):
     delay_min = col_w1.number_input("Min seconds between sends", min_value=0, value=worker.delay_between_sends_seconds.min)
     delay_max = col_w2.number_input("Max seconds between sends", min_value=0, value=worker.delay_between_sends_seconds.max)
     hard_cap = col_w1.number_input("Hard daily cap per inbox", min_value=1, value=worker.hard_daily_cap)
+    st.markdown("**US reservation:** hold back part of each inbox's daily cap for US leads until a set time.")
+    col_r1, col_r2 = st.columns(2)
+    reserve_percent = col_r1.number_input("Percent of cap held for US leads", min_value=0, max_value=100, value=worker.us_reservation.percent)
+    reserve_until = col_r2.text_input("Hold until (IST, HH:MM)", value=worker.us_reservation.until_ist)
     if st.form_submit_button("💾 Save worker settings"):
+        worker.us_reservation.percent = int(reserve_percent)
+        worker.us_reservation.until_ist = reserve_until.strip()
         worker.app_window_ist.start = app_start.strip()
         worker.app_window_ist.end = app_end.strip()
         worker.recipient_window.start = recipient_start.strip()

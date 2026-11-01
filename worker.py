@@ -6,13 +6,12 @@ import argparse
 import datetime
 import logging
 import os
-import sqlite3
 import time
 from typing import Optional
 
 import yaml
 
-from mailer import engine
+from mailer import detection, engine, safety
 from mailer.config import ConfigError, Settings, load_settings
 from mailer.db import get_app_state, init_db, open_conn, set_app_state, utc_now_iso
 from mailer.logs import setup_logging
@@ -92,6 +91,26 @@ def reload_settings(last_good: Optional[Settings]) -> Settings:
         return last_good
 
 
+def detection_is_due(settings: Settings) -> bool:
+    """Return True if the last detection run is older than the configured gap."""
+    last_run = get_app_state(detection.LAST_RUN_KEY)
+    if not last_run:
+        return True
+    last_time = datetime.datetime.fromisoformat(last_run.replace("Z", "+00:00"))
+    age = datetime.datetime.now(datetime.timezone.utc) - last_time
+    return age >= datetime.timedelta(minutes=settings.worker.detection_every_minutes)
+
+
+def run_detection(settings: Settings) -> None:
+    """Check inboxes and apply the safety rules. A failure here must not stop sending."""
+    try:
+        with open_conn() as conn:
+            detection.run_all_inboxes(settings, conn=conn)
+            safety.evaluate_all_inboxes(settings, conn)
+    except Exception as e:
+        logger.exception("Detection failed: %s", e)
+
+
 def run_once() -> None:
     """Run a single engine tick."""
     logger.info("Executing worker in single-tick mode (--once).")
@@ -126,14 +145,17 @@ def run_loop() -> None:
                             settings.worker.app_window_ist.start, settings.worker.app_window_ist.end)
                 break
 
-            if get_app_state("paused_all", "0") == "1":
+            # This runs even during a global pause, so opt-outs are never missed.
+            if detection_is_due(settings):
+                run_detection(settings)
+
+            if get_app_state(safety.PAUSED_ALL_KEY, "0") == "1":
                 time.sleep(settings.worker.idle_sleep_seconds)
                 continue
 
-            # Detection and safety join this loop in Milestone 6.
             try:
                 sent_something = engine.tick(settings)
-            except (sqlite3.Error, OSError, ValueError, KeyError) as e:
+            except Exception as e:
                 # One bad tick must never stop the worker for the night.
                 logger.exception("Tick failed: %s", e)
                 sent_something = False

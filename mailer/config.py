@@ -33,6 +33,7 @@ class SenderSettings:
 @dataclass
 class ModeSettings:
     dry_run: bool = True
+    test_leads_only: bool = True
 
 
 @dataclass
@@ -55,6 +56,12 @@ class RecipientWindowSettings:
 
 
 @dataclass
+class USReservationSettings:
+    percent: int = 50
+    until_ist: str = "22:30"
+
+
+@dataclass
 class WorkerSettings:
     app_window_ist: AppWindowSettings = field(default_factory=AppWindowSettings)
     recipient_window: RecipientWindowSettings = field(default_factory=RecipientWindowSettings)
@@ -62,6 +69,7 @@ class WorkerSettings:
     detection_every_minutes: int = 10
     idle_sleep_seconds: int = 5
     hard_daily_cap: int = 150
+    us_reservation: USReservationSettings = field(default_factory=USReservationSettings)
 
 
 @dataclass
@@ -102,6 +110,10 @@ def validate_settings(settings: Settings) -> None:
     _validate_time_str(settings.worker.app_window_ist.end, "worker.app_window_ist.end")
     _validate_time_str(settings.worker.recipient_window.start, "worker.recipient_window.start")
     _validate_time_str(settings.worker.recipient_window.end, "worker.recipient_window.end")
+    _validate_time_str(settings.worker.us_reservation.until_ist, "worker.us_reservation.until_ist")
+
+    if not 0 <= settings.worker.us_reservation.percent <= 100:
+        raise ConfigError("worker.us_reservation.percent must be between 0 and 100.")
 
     delays = settings.worker.delay_between_sends_seconds
     if delays.min < 0:
@@ -156,6 +168,7 @@ def load_settings(path: Path | str | None = None) -> Settings:
     app_win_data = worker_data.get("app_window_ist") or {}
     recip_win_data = worker_data.get("recipient_window") or {}
     delay_data = worker_data.get("delay_between_sends_seconds") or {}
+    reservation_data = worker_data.get("us_reservation") or {}
 
     settings = Settings(
         sender=SenderSettings(
@@ -171,6 +184,8 @@ def load_settings(path: Path | str | None = None) -> Settings:
         mode=ModeSettings(
             # Only an explicit false goes live. Blank or unreadable values stay in dry run.
             dry_run=mode_data.get("dry_run", True) is not False,
+            # Same rule: real leads stay locked unless this is explicitly false.
+            test_leads_only=mode_data.get("test_leads_only", True) is not False,
         ),
         worker=WorkerSettings(
             app_window_ist=AppWindowSettings(
@@ -189,6 +204,10 @@ def load_settings(path: Path | str | None = None) -> Settings:
             detection_every_minutes=int(worker_data.get("detection_every_minutes", 10)),
             idle_sleep_seconds=int(worker_data.get("idle_sleep_seconds", 5)),
             hard_daily_cap=int(worker_data.get("hard_daily_cap", 150)),
+            us_reservation=USReservationSettings(
+                percent=int(reservation_data.get("percent", 50)),
+                until_ist=reservation_data.get("until_ist", "22:30"),
+            ),
         ),
         safety=SafetySettings(
             bounce_pause_threshold=int(safety_data.get("bounce_pause_threshold", 3)),
@@ -222,6 +241,7 @@ def save_settings(settings: Settings, path: Path | str | None = None) -> None:
             "detection_every_minutes": settings.worker.detection_every_minutes,
             "idle_sleep_seconds": settings.worker.idle_sleep_seconds,
             "hard_daily_cap": settings.worker.hard_daily_cap,
+            "us_reservation": asdict(settings.worker.us_reservation),
         },
         "safety": asdict(settings.safety),
         "import": asdict(settings.import_),
